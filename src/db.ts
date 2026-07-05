@@ -19,12 +19,30 @@ export function getLocationById(db: D1Database, id: number) {
 
 export function addLocation(
   db: D1Database,
-  location: { slug: string; name: string; sensorIndex: number; lat: number | null; lon: number | null },
+  location: {
+    slug: string;
+    name: string;
+    sensorIndex: number;
+    lat: number | null;
+    lon: number | null;
+    addedByChatId: number | null;
+  },
 ) {
   return db
-    .prepare("INSERT INTO locations (slug, name, sensor_index, lat, lon) VALUES (?, ?, ?, ?, ?)")
-    .bind(location.slug, location.name, location.sensorIndex, location.lat, location.lon)
+    .prepare("INSERT INTO locations (slug, name, sensor_index, lat, lon, added_by_chat_id) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(location.slug, location.name, location.sensorIndex, location.lat, location.lon, location.addedByChatId)
     .run();
+}
+
+// Explicit cascade rather than relying on the schema's ON DELETE CASCADE -
+// D1/SQLite doesn't enforce foreign keys unless PRAGMA foreign_keys is on,
+// so this can't be assumed to fire on its own.
+export function deleteLocation(db: D1Database, locationId: number) {
+  return db.batch([
+    db.prepare("DELETE FROM readings_history WHERE location_id = ?").bind(locationId),
+    db.prepare("DELETE FROM subscriptions WHERE location_id = ?").bind(locationId),
+    db.prepare("DELETE FROM locations WHERE id = ?").bind(locationId),
+  ]);
 }
 
 export function updateLocationReading(db: D1Database, locationId: number, aqi: number, level: number) {
@@ -59,6 +77,11 @@ export function purgeOldReadings(db: D1Database) {
 
 export function listSubscriptionsForLocation(db: D1Database, locationId: number) {
   return db.prepare("SELECT chat_id FROM subscriptions WHERE location_id = ?").bind(locationId).all<{ chat_id: number }>();
+}
+
+export async function countSubscriptionsForLocation(db: D1Database, locationId: number): Promise<number> {
+  const row = await db.prepare("SELECT COUNT(*) as count FROM subscriptions WHERE location_id = ?").bind(locationId).first<{ count: number }>();
+  return row?.count ?? 0;
 }
 
 export function listSubscriptionsForChat(db: D1Database, chatId: number) {

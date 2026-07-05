@@ -7,7 +7,12 @@ CREATE TABLE IF NOT EXISTS locations (
   lon REAL,
   last_aqi INTEGER,
   last_level INTEGER,
-  last_checked_at TEXT
+  last_checked_at TEXT,
+  -- Telegram chat_id of whoever ran /addlocation for this row (NULL for
+  -- locations registered via the /admin/locations HTTP endpoint, e.g. the
+  -- seeded Leadville, CO). Only this chat - or the admin endpoint - may
+  -- remove the location via /removelocation.
+  added_by_chat_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS subscriptions (

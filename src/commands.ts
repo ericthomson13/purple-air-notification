@@ -3,6 +3,8 @@ import {
   addLocation,
   addSubscription,
   countLocations,
+  countSubscriptionsForLocation,
+  deleteLocation,
   getLocationBySlug,
   getPastReading,
   insertReadingHistory,
@@ -21,9 +23,17 @@ import type { Env, LocationRow } from "./types";
 const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*-[a-z]{2}$/;
 
 // Caps total PurpleAir calls from the scheduled poll, which fetches every
-// registered location every 15 min regardless of subscriber count - the
+// registered location every 10 min regardless of subscriber count - the
 // thing that actually scales with self-service location adding.
 const MAX_LOCATIONS = 50;
+
+// Cloudflare Workers' free-tier limit is 50 external subrequests per
+// invocation - every alert send is one, and a threshold crossing fans out
+// to all of a location's subscribers in a single invocation. Warn early
+// (40) and again at the actual wall (50) so growth doesn't silently start
+// dropping notifications.
+const SUBSCRIBER_WARNING_THRESHOLD = 40;
+const SUBSCRIBER_HARD_CAP = 50;
 
 const ADD_LOCATION_USAGE =
   "Usage: /addlocation &lt;slug&gt;\n" +
@@ -39,6 +49,7 @@ const WELCOME =
   "/locations - list available locations\n" +
   "/subscribe &lt;slug&gt; - get alerts for a location\n" +
   "/addlocation &lt;slug&gt; - add a new location (e.g. boulder-co) and subscribe to it\n" +
+  "/removelocation &lt;slug&gt; - remove a location you added (only the adder can)\n" +
   "/unsubscribe &lt;slug&gt; - stop alerts for a location\n" +
   "/status - show your subscriptions and their current AQI";
 
@@ -54,11 +65,37 @@ function parseSlug(slug: string): { city: string; state: string } {
   return { city, state };
 }
 
+// Since PurpleAir/Cloudflare usage barely moves with more users (see
+// SUBSCRIBER_HARD_CAP for the one real per-location limit), it's cheap to
+// encourage sharing - included on subscription-confirmation messages.
+function shareLine(env: Env): string {
+  return `\n\nKnow someone else who'd find this useful? Share the bot: https://t.me/${env.TELEGRAM_BOT_USERNAME}`;
+}
+
+// Warns (log + message to whoever added the location, if known) when a
+// location's subscriber count crosses the point where Cloudflare's
+// free-tier subrequest limit risks silently dropping alert sends.
+async function checkSubscriberSafetyNet(env: Env, location: LocationRow): Promise<void> {
+  const count = await countSubscriptionsForLocation(env.DB, location.id);
+  if (count !== SUBSCRIBER_WARNING_THRESHOLD && count !== SUBSCRIBER_HARD_CAP) return;
+
+  const text =
+    count >= SUBSCRIBER_HARD_CAP
+      ? `${location.name} (${location.slug}) has reached ${count} subscribers — Cloudflare's free-tier limit is ~50 alert sends per threshold crossing for one location. Subscribers beyond this may silently stop getting notified. Upgrading to Workers Paid ($5/mo) removes this cap.`
+      : `${location.name} (${location.slug}) just crossed ${count} subscribers — heads up, Cloudflare's free tier caps alert fan-out at ~50 recipients per threshold crossing for one location. Worth planning ahead if this keeps growing.`;
+
+  console.warn(text);
+  if (location.added_by_chat_id !== null) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, location.added_by_chat_id, text);
+  }
+}
+
 // Subscribes chatId to location and returns a line describing the current
 // AQI (using a cached reading if it's fresh - see getFreshReading). Shared
 // by /subscribe and /addlocation's "location already exists" path.
 async function subscribeAndDescribeAqi(env: Env, chatId: number, location: LocationRow): Promise<string> {
   await addSubscription(env.DB, chatId, location.id);
+  await checkSubscriberSafetyNet(env, location);
   try {
     const { aqi, levelIdx, past } = await getFreshReading(env.DB, location, env.PURPLEAIR_API_KEY);
     const level = AQI_LEVELS[levelIdx];
@@ -103,7 +140,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
       await sendTelegramMessage(
         env.TELEGRAM_BOT_TOKEN,
         chatId,
-        `Thanks for signing up to our AQI bot leveraging PurpleAir data. ${aqiLine}\n\nYou'll be notified when it crosses 50/100/150/200/300.`,
+        `Thanks for signing up to our AQI bot leveraging PurpleAir data. ${aqiLine}\n\nYou'll be notified when it crosses 50/100/150/200/300.${shareLine(env)}`,
       );
       break;
     }
@@ -128,7 +165,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
       const existing = await getLocationBySlug(env.DB, slug);
       if (existing) {
         const aqiLine = await subscribeAndDescribeAqi(env, chatId, existing);
-        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `${existing.name} is already tracked as "${slug}" — subscribing you now. ${aqiLine}`);
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `${existing.name} is already tracked as "${slug}" — subscribing you now. ${aqiLine}${shareLine(env)}`);
         break;
       }
 
@@ -222,7 +259,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
       }
 
       try {
-        await addLocation(env.DB, { slug, name, sensorIndex, lat: null, lon: null });
+        await addLocation(env.DB, { slug, name, sensorIndex, lat: null, lon: null, addedByChatId: chatId });
       } catch (err) {
         console.error(`Failed to insert location ${slug}:`, err);
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `That location may have just been added by someone else — try /subscribe ${slug}.`);
@@ -245,8 +282,37 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
       await sendTelegramMessage(
         env.TELEGRAM_BOT_TOKEN,
         chatId,
-        `Added ${newLocation.name} (${slug})${sensorNote} and subscribed you. Current AQI is ${reading.aqi} (${level.emoji} ${level.name}).${dangerZoneNote(reading.aqi)}\n\nYou'll be notified when it crosses 50/100/150/200/300.`,
+        `Added ${newLocation.name} (${slug})${sensorNote} and subscribed you. Current AQI is ${reading.aqi} (${level.emoji} ${level.name}).${dangerZoneNote(reading.aqi)}\n\nYou'll be notified when it crosses 50/100/150/200/300.${shareLine(env)}`,
       );
+      break;
+    }
+
+    case "/removelocation": {
+      const slug = args[0];
+      if (!slug) {
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Usage: /removelocation &lt;slug&gt; — only the chat that added a location can remove it.");
+        break;
+      }
+      const location = await getLocationBySlug(env.DB, slug);
+      if (!location) {
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `Unknown location "${slug}".`);
+        break;
+      }
+      if (location.added_by_chat_id !== chatId) {
+        await sendTelegramMessage(
+          env.TELEGRAM_BOT_TOKEN,
+          chatId,
+          `Only whoever added "${slug}" can remove it${location.added_by_chat_id === null ? " (it was registered by the bot operator)" : ""}. If you just want to stop your own alerts, use /unsubscribe ${slug} instead.`,
+        );
+        break;
+      }
+
+      const subscriberCount = await countSubscriptionsForLocation(env.DB, location.id);
+      await deleteLocation(env.DB, location.id);
+
+      const otherSubscribers = subscriberCount - 1; // the remover was very likely subscribed themselves
+      const impactNote = otherSubscribers > 0 ? ` Note: ${otherSubscribers} other subscriber(s) will no longer get alerts for it.` : "";
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `Removed ${location.name} (${slug}).${impactNote}`);
       break;
     }
 

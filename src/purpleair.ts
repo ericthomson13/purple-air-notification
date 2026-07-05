@@ -9,7 +9,7 @@ export const TREND_LOOKBACK_MINUTES = 30;
 // (e.g. /subscribe) will reuse it instead of hitting PurpleAir again. Keeps
 // a burst of subscribes to the same popular location from each costing a
 // separate PurpleAir API call - the scheduled poll already refreshes every
-// location on its own 15-min cadence regardless.
+// location on its own 10-min cadence regardless.
 const SUBSCRIBE_FRESHNESS_MINUTES = 5;
 
 const FIELDS = "pm2.5_cf_1_a,pm2.5_cf_1_b,humidity,temperature,last_seen,name";

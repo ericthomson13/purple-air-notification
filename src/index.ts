@@ -35,6 +35,7 @@ async function handleAddLocation(request: Request, env: Env): Promise<Response> 
     sensorIndex: body.sensorIndex,
     lat: body.lat ?? null,
     lon: body.lon ?? null,
+    addedByChatId: null,
   });
   return new Response("created", { status: 201 });
 }

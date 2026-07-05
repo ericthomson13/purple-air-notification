@@ -15,7 +15,7 @@ Just want to subscribe rather than run this yourself? See
 
 - A [Cloudflare Worker](https://developers.cloudflare.com/workers/) runs on a
   [Cron Trigger](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
-  every 15 minutes. It fetches the latest PM2.5 reading for each registered
+  every 10 minutes. It fetches the latest PM2.5 reading for each registered
   location from the PurpleAir API, applies the [EPA/Barkjohn correction](https://amt.copernicus.org/articles/14/4617/2021/)
   (raw PurpleAir PM2.5 reads high, especially in smoke, and needs correcting
   before it's a real AQI), and converts it to AQI using the
@@ -37,7 +37,7 @@ Just want to subscribe rather than run this yourself? See
 - Anyone can add a new location themselves with `/addlocation`, no admin
   required — see [Adding a location](#7-add-a-location). To keep PurpleAir
   API usage bounded (the scheduled poll fetches *every* registered location
-  every 15 minutes, forever, regardless of how many people subscribe to
+  every 10 minutes, forever, regardless of how many people subscribe to
   each one), total locations are capped at 50 (`MAX_LOCATIONS` in
   `src/commands.ts`).
 - Whenever a reported AQI is 100 or higher, replies include a direct link
