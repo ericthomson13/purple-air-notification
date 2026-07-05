@@ -72,9 +72,11 @@ function shareLine(env: Env): string {
   return `\n\nKnow someone else who'd find this useful? Share the bot: https://t.me/${env.TELEGRAM_BOT_USERNAME}`;
 }
 
-// Warns (log + message to whoever added the location, if known) when a
-// location's subscriber count crosses the point where Cloudflare's
-// free-tier subrequest limit risks silently dropping alert sends.
+// Warns when a location's subscriber count crosses the point where
+// Cloudflare's free-tier subrequest limit risks silently dropping alert
+// sends. Goes to ADMIN_CHAT_ID (the operator) if configured - that's who
+// can actually act on it (e.g. upgrade to Workers Paid) - falling back to
+// whoever added the location if no admin chat is set up.
 async function checkSubscriberSafetyNet(env: Env, location: LocationRow): Promise<void> {
   const count = await countSubscriptionsForLocation(env.DB, location.id);
   if (count !== SUBSCRIBER_WARNING_THRESHOLD && count !== SUBSCRIBER_HARD_CAP) return;
@@ -85,8 +87,10 @@ async function checkSubscriberSafetyNet(env: Env, location: LocationRow): Promis
       : `${location.name} (${location.slug}) just crossed ${count} subscribers — heads up, Cloudflare's free tier caps alert fan-out at ~50 recipients per threshold crossing for one location. Worth planning ahead if this keeps growing.`;
 
   console.warn(text);
-  if (location.added_by_chat_id !== null) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, location.added_by_chat_id, text);
+
+  const recipient = env.ADMIN_CHAT_ID ? Number(env.ADMIN_CHAT_ID) : location.added_by_chat_id;
+  if (recipient !== null) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, recipient, text);
   }
 }
 

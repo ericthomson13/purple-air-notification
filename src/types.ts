@@ -8,6 +8,10 @@ export interface Env {
   // link in subscription confirmations. Not a security secret, but kept out
   // of the public repo the same way since it identifies the specific bot.
   TELEGRAM_BOT_USERNAME: string;
+  // Optional: the operator's own Telegram chat_id. If set, operational
+  // heads-ups (currently: the subscriber safety-net warning) go here
+  // instead of to whoever happened to add the location.
+  ADMIN_CHAT_ID?: string;
 }
 
 export interface LocationRow {

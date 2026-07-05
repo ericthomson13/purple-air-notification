@@ -8,6 +8,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 REQUIRED_VARS=(PURPLEAIR_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET ADMIN_TOKEN TELEGRAM_BOT_USERNAME)
 
+# Pushed if present in .env, but their absence never blocks deploy.
+OPTIONAL_VARS=(ADMIN_CHAT_ID)
+
 if [[ -f .env ]]; then
   set -a
   # shellcheck disable=SC1091
@@ -38,6 +41,23 @@ for var in "${REQUIRED_VARS[@]}"; do
   value="${!var:-}"
   if [[ -z "$value" ]]; then
     missing_no_value+=("$var")
+    continue
+  fi
+
+  echo "→ $var missing on Cloudflare, pushing from .env..."
+  printf '%s' "$value" | npx wrangler secret put "$var" >/dev/null
+  echo "✓ $var pushed"
+done
+
+for var in "${OPTIONAL_VARS[@]}"; do
+  if grep -qx "$var" <<<"$existing"; then
+    echo "✓ $var already set on Cloudflare"
+    continue
+  fi
+
+  value="${!var:-}"
+  if [[ -z "$value" ]]; then
+    echo "· $var not set on Cloudflare or in .env (optional, skipping)"
     continue
   fi
 

@@ -68,8 +68,9 @@ These map almost exactly onto the [2024-revised EPA PM2.5 AQI breakpoints](https
 
 ## Setup
 
-You'll end up setting four secrets on the Worker. Only one of them actually
-comes from an external service — the other three you generate yourself:
+You'll end up setting five secrets on the Worker (plus one optional one).
+Only two of them actually come from an external service — the rest you
+generate or fill in yourself:
 
 | Env var | Where it comes from |
 |---|---|
@@ -77,6 +78,8 @@ comes from an external service — the other three you generate yourself:
 | `TELEGRAM_BOT_TOKEN` | BotFather — the token it gives you after `/newbot` |
 | `TELEGRAM_WEBHOOK_SECRET` | **You generate this** (e.g. `openssl rand -hex 24`) — verifies incoming webhook requests really came from Telegram |
 | `ADMIN_TOKEN` | **You generate this** too — protects the `/admin/locations` endpoint |
+| `TELEGRAM_BOT_USERNAME` | Your bot's `@username` (no `@`) from BotFather/its Telegram profile — not a secret in the security sense, but kept out of the public repo since it identifies the specific bot. Used to build the shareable `t.me/<username>` link in subscription confirmations |
+| `ADMIN_CHAT_ID` *(optional)* | Your own Telegram chat_id — message [@userinfobot](https://t.me/userinfobot) to get it. If set, you get DM'd when any location crosses 40 or 50 subscribers (see "Why this stack" below); if unset, that warning goes to whoever added the location instead |
 
 ### 1. Prerequisites
 
@@ -103,8 +106,9 @@ You'll get back a key that looks like a UUID. That's `PURPLEAIR_API_KEY` below.
 ### 3. Create a Telegram bot
 
 1. Open Telegram, message [@BotFather](https://t.me/BotFather), send `/newbot`, follow the prompts.
-2. BotFather gives you a token like `123456789:AAExampleTokenValue`. That's your only externally-issued secret — `TELEGRAM_BOT_TOKEN`.
+2. BotFather gives you a token like `123456789:AAExampleTokenValue` — that's `TELEGRAM_BOT_TOKEN`. It also shows you the bot's `@username` you just picked — that's `TELEGRAM_BOT_USERNAME` (no `@`).
 3. Generate `TELEGRAM_WEBHOOK_SECRET` and `ADMIN_TOKEN` yourself (see the table above) — BotFather has nothing to do with these two.
+4. Optional: message [@userinfobot](https://t.me/userinfobot) to get your own numeric chat_id for `ADMIN_CHAT_ID`.
 
 ### 4. Create the D1 database and apply the schema
 
@@ -278,6 +282,27 @@ convention), not `.env`. `.env` is only consumed by `scripts/sync-secrets.sh`
 to push real secrets to your deployed Worker. If you want the same values
 available locally, copy them into a `.dev.vars` file too (also gitignored).
 
+## Versioning & deploy notifications
+
+The project uses plain [semver](https://semver.org/) via npm's built-in
+`npm version` — no extra tooling. To cut a new version:
+
+```bash
+npm version patch   # or minor / major
+git push --follow-tags
+npm run deploy
+```
+
+`npm version` bumps `package.json`, commits that change, and creates a git
+tag (`v0.1.1`, etc.) in one step; `--follow-tags` pushes the tag along with
+the commit.
+
+If `ADMIN_CHAT_ID` is set, `npm run deploy` automatically DMs you
+`✅ purple-air-notification deployed successfully — version X.X.X` once the
+deploy succeeds (wired as the `postdeploy` npm lifecycle hook — see
+`scripts/notify-deploy.sh`). A failed deploy never reaches this step. If
+`ADMIN_CHAT_ID` isn't set, it's silently skipped.
+
 ## Project structure
 
 ```
@@ -292,6 +317,7 @@ scripts/
   sync-secrets.sh    Pushes missing secrets from .env to Cloudflare before deploy
   set-webhook.sh     Registers the Worker's URL with Telegram's setWebhook API
   webhook-status.sh  Prints Telegram's current webhook registration (getWebhookInfo)
+  notify-deploy.sh   DMs ADMIN_CHAT_ID with the deployed version (postdeploy hook)
 schema.sql      D1 table definitions (locations, subscriptions, readings_history)
 wrangler.jsonc  Worker + cron trigger + D1 binding config
 .env.example    Template for secrets + WORKER_URL (copy to .env, gitignored)
