@@ -200,6 +200,35 @@ describe("findNearestSensor", () => {
     const nearest = await findNearestSensor(40.0, -105.0, "key");
     expect(nearest?.sensorIndex).toBe(2);
   });
+
+  // Regression test: a real "nearest" candidate near a diverging Louisville,
+  // CO sensor reported only its A channel (B was entirely absent from the
+  // per-sensor endpoint, and null in the list response). Treating a null
+  // channel as "not diverging" picked it as the replacement, and the
+  // subsequent per-sensor fetch then failed with an unrelated "missing
+  // required fields" error instead of the self-heal cleanly falling back to
+  // "no healthy sensor nearby".
+  it("skips candidates missing a PM2.5 channel entirely, even if closest", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            fields: ["sensor_index", "name", "latitude", "longitude", "last_seen", "pm2.5_cf_1_a", "pm2.5_cf_1_b"],
+            data: [
+              [1, "Closest but single-channel", 40.001, -105.001, now, 5.9, null],
+              [2, "Healthy but farther", 40.01, -105.01, now, 10, 12],
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const nearest = await findNearestSensor(40.0, -105.0, "key");
+    expect(nearest?.sensorIndex).toBe(2);
+  });
 });
 
 describe("sensor self-healing", () => {
@@ -257,6 +286,42 @@ describe("sensor self-healing", () => {
     await expect(refreshLocationReading(env.DB, location, "key")).rejects.toBeInstanceOf(SensorDivergenceError);
 
     const updated = await getLocationBySlug(env.DB, "pa-heal-none-co");
+    expect(updated?.sensor_index).toBe(1);
+  });
+
+  // Regression test: findNearestSensor can pick a candidate that looked
+  // healthy in the list search but fails when actually fetched (e.g. it went
+  // stale in the interim). That must fall back to "no healthy sensor found"
+  // (the original SensorDivergenceError), not leak the replacement's
+  // unrelated fetch error - callers only know how to handle the former.
+  it("falls back to the original SensorDivergenceError if the replacement sensor also fails to fetch", async () => {
+    const location = await makeTestLocation("pa-heal-bad-replacement-co");
+
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/v1/sensors/1?")) {
+        return Promise.resolve(mockSensorResponse({ pm25A: 4593, pm25B: 3, lat: 40.0, lon: -105.0 }));
+      }
+      if (url.includes("/v1/sensors?")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              fields: ["sensor_index", "name", "latitude", "longitude", "last_seen", "pm2.5_cf_1_a", "pm2.5_cf_1_b"],
+              data: [[2, "Looked healthy but isn't", 40.001, -105.001, Math.floor(Date.now() / 1000), 10, 12]],
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      if (url.includes("/v1/sensors/2?")) {
+        return Promise.resolve(new Response("nope", { status: 500 }));
+      }
+      throw new Error(`unexpected url in test: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(refreshLocationReading(env.DB, location, "key")).rejects.toBeInstanceOf(SensorDivergenceError);
+
+    const updated = await getLocationBySlug(env.DB, "pa-heal-bad-replacement-co");
     expect(updated?.sensor_index).toBe(1);
   });
 });

@@ -132,7 +132,21 @@ async function fetchReadingWithSensorHealing(
     const replacement = await findNearestSensor(err.lat, err.lon, apiKey, location.sensor_index);
     if (!replacement) throw err;
 
-    const reading = await fetchSensorReading(replacement.sensorIndex, apiKey);
+    let reading: SensorReading;
+    try {
+      reading = await fetchSensorReading(replacement.sensorIndex, apiKey);
+    } catch (replacementErr) {
+      // The replacement looked healthy in the sensors-list search, but
+      // failed on the individual fetch (e.g. it went stale in the interim,
+      // or - as happened with a real "nearest" candidate that reports only
+      // one PM2.5 channel - the list response doesn't reveal a field is
+      // actually missing). Report this the same as "no replacement found"
+      // rather than leaking an unrelated error type the caller doesn't
+      // know how to handle.
+      console.error(`Replacement sensor ${replacement.sensorIndex} for location ${location.slug} also failed to fetch:`, replacementErr);
+      throw err;
+    }
+
     await updateLocationSensor(db, location.id, replacement.sensorIndex);
     console.warn(
       `Location ${location.slug}: sensor ${location.sensor_index} had diverging A/B channels, switched to nearby sensor ${replacement.sensorIndex} (${replacement.name})`,
@@ -219,9 +233,12 @@ export async function findNearestSensor(lat: number, lon: number, apiKey: string
     const lastSeen = row[col.last_seen] as number;
     if (nowSeconds - lastSeen > MAX_SENSOR_STALE_SECONDS) continue;
 
-    const pm25A = row[col["pm2.5_cf_1_a"]] as number;
-    const pm25B = row[col["pm2.5_cf_1_b"]] as number;
-    if (channelsDiverge(pm25A, pm25B)) continue;
+    const pm25A = row[col["pm2.5_cf_1_a"]] as number | null;
+    const pm25B = row[col["pm2.5_cf_1_b"]] as number | null;
+    // Single-channel sensors report one of these as null in the list
+    // response (and omit it entirely from the per-sensor endpoint) - skip
+    // them, since fetchSensorReading requires both channels.
+    if (pm25A === null || pm25B === null || channelsDiverge(pm25A, pm25B)) continue;
 
     const sLat = row[col.latitude] as number;
     const sLon = row[col.longitude] as number;
