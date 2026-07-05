@@ -11,7 +11,8 @@ import {
   removeSubscription,
   updateLocationReading,
 } from "./db";
-import { fetchSensorReading, getFreshReading, TREND_LOOKBACK_MINUTES } from "./purpleair";
+import { geocodeCityState } from "./geocode";
+import { fetchSensorReading, findNearestSensor, getFreshReading, TREND_LOOKBACK_MINUTES } from "./purpleair";
 import { formatLocationsList, formatPastNote, formatStatus, sendTelegramMessage, type TelegramUpdate } from "./telegram";
 import type { Env, LocationRow } from "./types";
 
@@ -25,19 +26,33 @@ const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*-[a-z]{2}$/;
 const MAX_LOCATIONS = 50;
 
 const ADD_LOCATION_USAGE =
-  "Usage: /addlocation &lt;slug&gt; &lt;sensor_index&gt; &lt;City, ST&gt;\n" +
-  "Example: /addlocation boulder-co 242389 Boulder, CO\n\n" +
-  "Don't have a sensor_index? Go to https://map.purpleair.com, click a sensor near your location, and check the page's URL - it'll include something like ?select=242389. That number is the sensor_index.\n\n" +
-  "The slug must be lowercase, hyphenated, and end in the 2-letter state code, e.g. boulder-co or salt-lake-city-ut.";
+  "Usage: /addlocation &lt;slug&gt;\n" +
+  "Example: /addlocation boulder-co\n\n" +
+  "The slug must be lowercase, hyphenated, and end in the 2-letter state code, e.g. boulder-co or salt-lake-city-ut - " +
+  "the bot reads the city and state from it, finds it on the map, and picks the nearest active PurpleAir sensor automatically.\n\n" +
+  "If that doesn't find anything, you can specify a sensor yourself instead: /addlocation &lt;slug&gt; &lt;sensor_index&gt; &lt;City, ST&gt; " +
+  "(find sensor_index at https://map.purpleair.com - click a sensor and check the page URL, e.g. ?select=242389).";
 
 const WELCOME =
   "Welcome to the PurpleAir AQI notifier.\n\n" +
   "Commands:\n" +
   "/locations - list available locations\n" +
   "/subscribe &lt;slug&gt; - get alerts for a location\n" +
-  "/addlocation &lt;slug&gt; &lt;sensor_index&gt; &lt;City, ST&gt; - add a new location and subscribe to it\n" +
+  "/addlocation &lt;slug&gt; - add a new location (e.g. boulder-co) and subscribe to it\n" +
   "/unsubscribe &lt;slug&gt; - stop alerts for a location\n" +
   "/status - show your subscriptions and their current AQI";
+
+// "salt-lake-city-ut" -> { city: "Salt Lake City", state: "UT" }. Only ever
+// called on slugs that already passed SLUG_PATTERN.
+function parseSlug(slug: string): { city: string; state: string } {
+  const parts = slug.split("-");
+  const state = parts[parts.length - 1].toUpperCase();
+  const city = parts
+    .slice(0, -1)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(" ");
+  return { city, state };
+}
 
 // Subscribes chatId to location and returns a line describing the current
 // AQI (using a cached reading if it's fresh - see getFreshReading). Shared
@@ -94,18 +109,10 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
     }
 
     case "/addlocation": {
-      const [slug, sensorIndexRaw, ...nameParts] = args;
-      const name = nameParts.join(" ");
+      const [slug, ...rest] = args;
 
-      if (!slug || !sensorIndexRaw || !name) {
+      if (!slug) {
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, ADD_LOCATION_USAGE);
-        break;
-      }
-
-      const existing = await getLocationBySlug(env.DB, slug);
-      if (existing) {
-        const aqiLine = await subscribeAndDescribeAqi(env, chatId, existing);
-        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `${existing.name} is already tracked as "${slug}" — subscribing you now. ${aqiLine}`);
         break;
       }
 
@@ -118,13 +125,10 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
         break;
       }
 
-      const sensorIndex = Number(sensorIndexRaw);
-      if (!Number.isInteger(sensorIndex) || sensorIndex <= 0) {
-        await sendTelegramMessage(
-          env.TELEGRAM_BOT_TOKEN,
-          chatId,
-          `"${sensorIndexRaw}" doesn't look like a valid sensor_index — it should be the number from the PurpleAir map URL (?select=&lt;sensor_index&gt;).`,
-        );
+      const existing = await getLocationBySlug(env.DB, slug);
+      if (existing) {
+        const aqiLine = await subscribeAndDescribeAqi(env, chatId, existing);
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `${existing.name} is already tracked as "${slug}" — subscribing you now. ${aqiLine}`);
         break;
       }
 
@@ -138,6 +142,72 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
         break;
       }
 
+      let sensorIndex: number;
+      let name: string;
+      let discoveredSensorName: string | null = null;
+
+      if (rest.length === 0) {
+        // Easy path: just the slug. Derive the place from it, geocode, and
+        // auto-pick the nearest active PurpleAir sensor.
+        const { city, state } = parseSlug(slug);
+        name = `${city}, ${state}`;
+
+        let place;
+        try {
+          place = await geocodeCityState(city, state);
+        } catch (err) {
+          console.error(`Failed to geocode "${name}" for ${slug}:`, err);
+          await sendTelegramMessage(
+            env.TELEGRAM_BOT_TOKEN,
+            chatId,
+            `Couldn't look up "${name}" right now — try again in a moment, or specify a sensor yourself: /addlocation ${slug} &lt;sensor_index&gt; ${name}`,
+          );
+          break;
+        }
+        if (!place) {
+          await sendTelegramMessage(
+            env.TELEGRAM_BOT_TOKEN,
+            chatId,
+            `Couldn't find "${name}" — double check the spelling in the slug, or specify a sensor yourself: /addlocation ${slug} &lt;sensor_index&gt; ${name}`,
+          );
+          break;
+        }
+
+        let nearest;
+        try {
+          nearest = await findNearestSensor(place.lat, place.lon, env.PURPLEAIR_API_KEY);
+        } catch (err) {
+          console.error(`Failed to search PurpleAir sensors near "${name}":`, err);
+          await sendTelegramMessage(
+            env.TELEGRAM_BOT_TOKEN,
+            chatId,
+            `Found ${name} but couldn't search PurpleAir for sensors nearby — try again, or specify one yourself: /addlocation ${slug} &lt;sensor_index&gt; ${name}`,
+          );
+          break;
+        }
+        if (!nearest) {
+          await sendTelegramMessage(
+            env.TELEGRAM_BOT_TOKEN,
+            chatId,
+            `Found ${name} but no active PurpleAir sensors nearby. Find one yourself at https://map.purpleair.com and use: /addlocation ${slug} &lt;sensor_index&gt; ${name}`,
+          );
+          break;
+        }
+
+        sensorIndex = nearest.sensorIndex;
+        discoveredSensorName = nearest.name;
+      } else {
+        // Fallback path: /addlocation <slug> <sensor_index> <City, ST>
+        const [sensorIndexRaw, ...nameParts] = rest;
+        name = nameParts.join(" ");
+        sensorIndex = Number(sensorIndexRaw);
+
+        if (!Number.isInteger(sensorIndex) || sensorIndex <= 0 || !name) {
+          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, ADD_LOCATION_USAGE);
+          break;
+        }
+      }
+
       let reading;
       try {
         reading = await fetchSensorReading(sensorIndex, env.PURPLEAIR_API_KEY);
@@ -146,7 +216,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
         await sendTelegramMessage(
           env.TELEGRAM_BOT_TOKEN,
           chatId,
-          `Couldn't read sensor_index ${sensorIndex} from PurpleAir — double check the number from the map URL and try again.`,
+          `Couldn't read sensor_index ${sensorIndex} from PurpleAir — it may be offline. Double check at https://map.purpleair.com and try again.`,
         );
         break;
       }
@@ -171,10 +241,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
       await addSubscription(env.DB, chatId, newLocation.id);
 
       const level = AQI_LEVELS[levelIdx];
+      const sensorNote = discoveredSensorName ? ` (using PurpleAir sensor "${discoveredSensorName}")` : "";
       await sendTelegramMessage(
         env.TELEGRAM_BOT_TOKEN,
         chatId,
-        `Added ${newLocation.name} (${slug}) and subscribed you. Current AQI is ${reading.aqi} (${level.emoji} ${level.name}).${dangerZoneNote(reading.aqi)}\n\nYou'll be notified when it crosses 50/100/150/200/300.`,
+        `Added ${newLocation.name} (${slug})${sensorNote} and subscribed you. Current AQI is ${reading.aqi} (${level.emoji} ${level.name}).${dangerZoneNote(reading.aqi)}\n\nYou'll be notified when it crosses 50/100/150/200/300.`,
       );
       break;
     }

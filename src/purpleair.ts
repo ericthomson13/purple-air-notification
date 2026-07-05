@@ -105,3 +105,53 @@ export async function getFreshReading(db: D1Database, location: LocationRow, api
   const { reading, levelIdx, past } = await refreshLocationReading(db, location, apiKey);
   return { aqi: reading.aqi, levelIdx, past };
 }
+
+export interface NearbySensor {
+  sensorIndex: number;
+  name: string;
+  distanceDegrees: number;
+}
+
+// Roughly ~10 miles at mid-latitudes - tight enough to avoid picking a
+// sensor from the wrong town, wide enough to usually find something.
+const SEARCH_BOX_DEGREES = 0.15;
+const MAX_SENSOR_STALE_SECONDS = 60 * 60;
+
+interface PurpleAirSensorsListResponse {
+  fields: string[];
+  data: Array<Array<number | string>>;
+}
+
+// Finds the closest active PurpleAir sensor to (lat, lon), for auto-discovery
+// when a user runs /addlocation with just a slug (no sensor_index).
+export async function findNearestSensor(lat: number, lon: number, apiKey: string): Promise<NearbySensor | null> {
+  const url =
+    `https://api.purpleair.com/v1/sensors?fields=name,latitude,longitude,last_seen` +
+    `&nwlat=${lat + SEARCH_BOX_DEGREES}&nwlng=${lon - SEARCH_BOX_DEGREES}` +
+    `&selat=${lat - SEARCH_BOX_DEGREES}&selng=${lon + SEARCH_BOX_DEGREES}`;
+  const res = await fetch(url, { headers: { "X-API-Key": apiKey } });
+
+  if (!res.ok) {
+    throw new Error(`PurpleAir API error ${res.status}: ${await res.text()}`);
+  }
+
+  const data = (await res.json()) as PurpleAirSensorsListResponse;
+  const col = Object.fromEntries(data.fields.map((f, i) => [f, i]));
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
+  let best: NearbySensor | null = null;
+  for (const row of data.data) {
+    const lastSeen = row[col.last_seen] as number;
+    if (nowSeconds - lastSeen > MAX_SENSOR_STALE_SECONDS) continue;
+
+    const sLat = row[col.latitude] as number;
+    const sLon = row[col.longitude] as number;
+    const distanceDegrees = Math.hypot(sLat - lat, sLon - lon);
+
+    if (!best || distanceDegrees < best.distanceDegrees) {
+      best = { sensorIndex: row[col.sensor_index] as number, name: row[col.name] as string, distanceDegrees };
+    }
+  }
+
+  return best;
+}
