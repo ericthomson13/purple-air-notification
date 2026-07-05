@@ -24,3 +24,8 @@ export interface SubscriptionRow {
   location_id: number;
   created_at: string;
 }
+
+export interface PastReading {
+  aqi: number;
+  checked_at: string;
+}

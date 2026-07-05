@@ -29,6 +29,12 @@ export const AQI_LEVELS: AqiLevel[] = [
 
 export const AQI_HEALTH_INFO_URL = "https://www.airnow.gov/aqi/aqi-basics/";
 
+// Once AQI hits 100+ it's worth a direct pointer to what that means, not
+// just in the threshold-crossing alert.
+export function dangerZoneNote(aqi: number): string {
+  return aqi >= 100 ? `\nFind more details: ${AQI_HEALTH_INFO_URL}` : "";
+}
+
 export function levelForAqi(aqi: number): AqiLevel {
   return AQI_LEVELS.find((level) => aqi <= level.threshold) ?? AQI_LEVELS[AQI_LEVELS.length - 1];
 }

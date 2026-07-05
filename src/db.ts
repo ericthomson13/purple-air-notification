@@ -1,7 +1,12 @@
-import type { LocationRow } from "./types";
+import type { LocationRow, PastReading } from "./types";
 
 export function listLocations(db: D1Database) {
   return db.prepare("SELECT * FROM locations ORDER BY name").all<LocationRow>();
+}
+
+export async function countLocations(db: D1Database): Promise<number> {
+  const row = await db.prepare("SELECT COUNT(*) as count FROM locations").first<{ count: number }>();
+  return row?.count ?? 0;
 }
 
 export function getLocationBySlug(db: D1Database, slug: string) {
@@ -45,7 +50,7 @@ export function getPastReading(db: D1Database, locationId: number, minutesAgo: n
        ORDER BY checked_at DESC LIMIT 1`,
     )
     .bind(locationId, `-${minutesAgo} minutes`)
-    .first<{ aqi: number; checked_at: string }>();
+    .first<PastReading>();
 }
 
 export function purgeOldReadings(db: D1Database) {

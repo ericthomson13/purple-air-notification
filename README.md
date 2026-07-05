@@ -3,7 +3,10 @@
 Get a Telegram message when the air quality (AQI) at a location crosses a
 significant threshold — 50, 100, 150, 200, or 300 — in either direction.
 Data comes from [PurpleAir](https://www2.purpleair.com/) community sensors.
-Ships with one location out of the box: **Leadville, CO**.
+Ships with one location out of the box: **Leadville, CO** — but anyone can
+add and subscribe to additional locations (or a single location that isn't
+Leadville) straight from the bot, and subscribe to more than one at a time.
+See [Adding a location](#7-add-a-location) below.
 
 Just want to subscribe rather than run this yourself? See
 [docs/user-guide.md](./docs/user-guide.md) for a non-technical signup walkthrough.
@@ -28,7 +31,17 @@ Just want to subscribe rather than run this yourself? See
   run `/subscribe leadville-co`, done. No website, no account to create.
   `/subscribe` also fetches a fresh reading on the spot and replies with the
   current AQI immediately, so you get instant confirmation the bot is
-  actually working instead of waiting for the next scheduled poll.
+  actually working instead of waiting for the next scheduled poll. A chat
+  can be subscribed to any number of locations at once — there's no
+  one-location-per-user limit.
+- Anyone can add a new location themselves with `/addlocation`, no admin
+  required — see [Adding a location](#7-add-a-location). To keep PurpleAir
+  API usage bounded (the scheduled poll fetches *every* registered location
+  every 15 minutes, forever, regardless of how many people subscribe to
+  each one), total locations are capped at 50 (`MAX_LOCATIONS` in
+  `src/commands.ts`).
+- Whenever a reported AQI is 100 or higher, replies include a direct link
+  to what that level means health-wise, not just in threshold-crossing alerts.
 - State (locations + subscriptions + recent reading history) lives in
   [Cloudflare D1](https://developers.cloudflare.com/d1/) (SQLite).
 
@@ -152,7 +165,10 @@ curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 ### 7. Add a location
 
 PurpleAir doesn't offer a search-by-city-name API, so finding a sensor is a
-manual, one-time step per location. Two ways to do it:
+manual, one-time step per location — but registering it is self-service, no
+admin action required.
+
+**Step 1: find a `sensor_index`.** Two ways to do it:
 
 **Option A — the map (visual, easiest for one-off lookups).** Go to
 [map.purpleair.com](https://map.purpleair.com/), zoom to the town/area you
@@ -172,7 +188,29 @@ The response has a `fields` array and a `data` array of rows — the first
 value in each row is always the `sensor_index`. Pick one with a recent
 `last_seen` timestamp.
 
-Either way, once you have a `sensor_index`, register it:
+**Step 2: register it — from the bot itself.** DM the bot:
+
+```
+/addlocation boulder-co <sensor_index> Boulder, CO
+```
+
+- `slug` must be lowercase, hyphenated, and end in the 2-letter state code —
+  e.g. `boulder-co`, `salt-lake-city-ut`. This is enforced (`SLUG_PATTERN` in
+  `src/commands.ts`); a malformed slug gets rejected with an example.
+- `sensor_index` is validated by fetching it from PurpleAir before the
+  location is created — a bad number fails immediately rather than silently
+  registering a dead sensor.
+- If the slug already exists, `/addlocation` just subscribes you to it
+  instead of erroring.
+- Total locations are capped at 50 (see "Why this stack" above) — once hit,
+  new `/addlocation` calls are rejected until an existing one is removed.
+
+Registering and subscribing happen in one step, and you get the current AQI
+back immediately as confirmation.
+
+**Alternative: the HTTP admin endpoint.** Still available if you'd rather
+register locations out-of-band (e.g. scripting several at once) without
+going through a Telegram chat:
 
 ```bash
 curl -X POST "https://<your-worker>.workers.dev/admin/locations" \
@@ -187,9 +225,10 @@ curl -X POST "https://<your-worker>.workers.dev/admin/locations" \
   }'
 ```
 
-Leadville, CO ships as the reference example — you'll need to fill in a real
-`sensorIndex` for it (or any other town) using the steps above, since sensor
-IDs can change as sensors go offline or get replaced.
+This doesn't validate the sensor or auto-subscribe anyone — it's a raw
+insert. Leadville, CO ships as the reference example; you'll need to
+register a real `sensorIndex` for it (or any other town) using either path
+above, since sensor IDs can change as sensors go offline or get replaced.
 
 ### 8. Try it
 
@@ -213,6 +252,17 @@ That's your confirmation the whole pipeline — PurpleAir key, sensor,
 Worker, D1, Telegram — is wired up correctly. After that, you'll get a
 message automatically whenever that location's AQI crosses 50, 100, 150,
 200, or 300 in either direction.
+
+To try adding a second, non-Leadville location and confirm you can be
+subscribed to more than one at once:
+
+```
+/addlocation boulder-co <sensor_index> Boulder, CO
+/status
+```
+
+`/status` should now show both Leadville and Boulder (or whichever
+locations you've subscribed to) in one reply.
 
 ## Local development
 
@@ -253,13 +303,14 @@ wrangler.jsonc  Worker + cron trigger + D1 binding config
 
 - [x] Single hardcoded reference location (Leadville, CO) with threshold alerts
 - [x] Self-service subscribe/unsubscribe via Telegram bot commands
-- [ ] Let a user type a place name (`/subscribe "Boulder, CO"`) and have the
-      bot geocode it and auto-discover the nearest PurpleAir sensor, instead
-      of requiring an admin to register locations by hand. Until this
-      exists, an unrecognized slug just gets pointed back to `/locations` —
-      there's no capture mechanism yet for "I want a location that isn't
-      registered," so tracking that demand is manual (ask people directly,
-      or watch for repeated `/subscribe` attempts on unknown slugs in logs)
+- [x] Self-service `/addlocation` — any user can register a new city-state
+      location (given a `sensor_index` they found on PurpleAir's map) and
+      subscribe to any number of locations at once, no admin step required.
+      Capped at 50 total locations to bound PurpleAir API usage.
+- [ ] Let a user type just a place name (`/addlocation "Boulder, CO"` with no
+      sensor_index) and have the bot geocode it and auto-discover the
+      nearest PurpleAir sensor itself, instead of requiring the user to find
+      and paste in a `sensor_index` by hand
 - [ ] Per-user configurable thresholds (not everyone wants alerts at all five levels)
 - [ ] Multi-sensor averaging per location (reduce reliance on a single sensor going offline/miscalibrated)
 - [ ] Web dashboard for browsing historical AQI per location

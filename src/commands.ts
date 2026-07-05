@@ -1,23 +1,58 @@
-import { AQI_LEVELS } from "./aqi";
+import { AQI_LEVELS, dangerZoneNote, levelIndexForAqi } from "./aqi";
 import {
+  addLocation,
   addSubscription,
+  countLocations,
   getLocationBySlug,
   getPastReading,
+  insertReadingHistory,
   listLocations,
   listSubscriptionsForChat,
   removeSubscription,
+  updateLocationReading,
 } from "./db";
-import { refreshLocationReading, TREND_LOOKBACK_MINUTES } from "./purpleair";
+import { fetchSensorReading, getFreshReading, TREND_LOOKBACK_MINUTES } from "./purpleair";
 import { formatLocationsList, formatPastNote, formatStatus, sendTelegramMessage, type TelegramUpdate } from "./telegram";
-import type { Env } from "./types";
+import type { Env, LocationRow } from "./types";
+
+// Requested locations must be a lowercase, hyphenated "city-state" slug,
+// e.g. boulder-co, salt-lake-city-ut.
+const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*-[a-z]{2}$/;
+
+// Caps total PurpleAir calls from the scheduled poll, which fetches every
+// registered location every 15 min regardless of subscriber count - the
+// thing that actually scales with self-service location adding.
+const MAX_LOCATIONS = 50;
+
+const ADD_LOCATION_USAGE =
+  "Usage: /addlocation &lt;slug&gt; &lt;sensor_index&gt; &lt;City, ST&gt;\n" +
+  "Example: /addlocation boulder-co 242389 Boulder, CO\n\n" +
+  "Don't have a sensor_index? Go to https://map.purpleair.com, click a sensor near your location, and check the page's URL - it'll include something like ?select=242389. That number is the sensor_index.\n\n" +
+  "The slug must be lowercase, hyphenated, and end in the 2-letter state code, e.g. boulder-co or salt-lake-city-ut.";
 
 const WELCOME =
   "Welcome to the PurpleAir AQI notifier.\n\n" +
   "Commands:\n" +
   "/locations - list available locations\n" +
   "/subscribe &lt;slug&gt; - get alerts for a location\n" +
+  "/addlocation &lt;slug&gt; &lt;sensor_index&gt; &lt;City, ST&gt; - add a new location and subscribe to it\n" +
   "/unsubscribe &lt;slug&gt; - stop alerts for a location\n" +
   "/status - show your subscriptions and their current AQI";
+
+// Subscribes chatId to location and returns a line describing the current
+// AQI (using a cached reading if it's fresh - see getFreshReading). Shared
+// by /subscribe and /addlocation's "location already exists" path.
+async function subscribeAndDescribeAqi(env: Env, chatId: number, location: LocationRow): Promise<string> {
+  await addSubscription(env.DB, chatId, location.id);
+  try {
+    const { aqi, levelIdx, past } = await getFreshReading(env.DB, location, env.PURPLEAIR_API_KEY);
+    const level = AQI_LEVELS[levelIdx];
+    return `Current AQI for ${location.name} is ${aqi}${formatPastNote(past)} (${level.emoji} ${level.name}).${dangerZoneNote(aqi)}`;
+  } catch (err) {
+    console.error(`Failed to fetch current reading for ${location.slug}:`, err);
+    return `Current AQI for ${location.name} isn't available right now — you'll get it on the next scheduled check.`;
+  }
+}
 
 export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Promise<void> {
   const message = update.message;
@@ -46,25 +81,100 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
       }
       const location = await getLocationBySlug(env.DB, slug);
       if (!location) {
-        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `Unknown location "${slug}". See /locations.`);
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `Unknown location "${slug}". See /locations, or /addlocation to add it.`);
         break;
       }
-      await addSubscription(env.DB, chatId, location.id);
-
-      let aqiLine: string;
-      try {
-        const { reading, levelIdx, past } = await refreshLocationReading(env.DB, location, env.PURPLEAIR_API_KEY);
-        const level = AQI_LEVELS[levelIdx];
-        aqiLine = `Current AQI for ${location.name} is ${reading.aqi}${formatPastNote(past)} (${level.emoji} ${level.name}).`;
-      } catch (err) {
-        console.error(`Failed to fetch current reading for ${location.slug}:`, err);
-        aqiLine = `Current AQI for ${location.name} isn't available right now — you'll get it on the next scheduled check.`;
-      }
-
+      const aqiLine = await subscribeAndDescribeAqi(env, chatId, location);
       await sendTelegramMessage(
         env.TELEGRAM_BOT_TOKEN,
         chatId,
         `Thanks for signing up to our AQI bot leveraging PurpleAir data. ${aqiLine}\n\nYou'll be notified when it crosses 50/100/150/200/300.`,
+      );
+      break;
+    }
+
+    case "/addlocation": {
+      const [slug, sensorIndexRaw, ...nameParts] = args;
+      const name = nameParts.join(" ");
+
+      if (!slug || !sensorIndexRaw || !name) {
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, ADD_LOCATION_USAGE);
+        break;
+      }
+
+      const existing = await getLocationBySlug(env.DB, slug);
+      if (existing) {
+        const aqiLine = await subscribeAndDescribeAqi(env, chatId, existing);
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `${existing.name} is already tracked as "${slug}" — subscribing you now. ${aqiLine}`);
+        break;
+      }
+
+      if (!SLUG_PATTERN.test(slug)) {
+        await sendTelegramMessage(
+          env.TELEGRAM_BOT_TOKEN,
+          chatId,
+          `"${slug}" doesn't look like city-state format. Use lowercase and hyphens, ending in the 2-letter state code, e.g. boulder-co or salt-lake-city-ut.`,
+        );
+        break;
+      }
+
+      const sensorIndex = Number(sensorIndexRaw);
+      if (!Number.isInteger(sensorIndex) || sensorIndex <= 0) {
+        await sendTelegramMessage(
+          env.TELEGRAM_BOT_TOKEN,
+          chatId,
+          `"${sensorIndexRaw}" doesn't look like a valid sensor_index — it should be the number from the PurpleAir map URL (?select=&lt;sensor_index&gt;).`,
+        );
+        break;
+      }
+
+      const locationCount = await countLocations(env.DB);
+      if (locationCount >= MAX_LOCATIONS) {
+        await sendTelegramMessage(
+          env.TELEGRAM_BOT_TOKEN,
+          chatId,
+          `We're at our location limit (${MAX_LOCATIONS}) for now to keep PurpleAir API usage in check. Reach out to whoever runs this bot to request a new one.`,
+        );
+        break;
+      }
+
+      let reading;
+      try {
+        reading = await fetchSensorReading(sensorIndex, env.PURPLEAIR_API_KEY);
+      } catch (err) {
+        console.error(`Failed to validate sensor ${sensorIndex} for new location ${slug}:`, err);
+        await sendTelegramMessage(
+          env.TELEGRAM_BOT_TOKEN,
+          chatId,
+          `Couldn't read sensor_index ${sensorIndex} from PurpleAir — double check the number from the map URL and try again.`,
+        );
+        break;
+      }
+
+      try {
+        await addLocation(env.DB, { slug, name, sensorIndex, lat: null, lon: null });
+      } catch (err) {
+        console.error(`Failed to insert location ${slug}:`, err);
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `That location may have just been added by someone else — try /subscribe ${slug}.`);
+        break;
+      }
+
+      const newLocation = await getLocationBySlug(env.DB, slug);
+      if (!newLocation) {
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Something went wrong adding that location — please try again.");
+        break;
+      }
+
+      const levelIdx = levelIndexForAqi(reading.aqi);
+      await updateLocationReading(env.DB, newLocation.id, reading.aqi, levelIdx);
+      await insertReadingHistory(env.DB, newLocation.id, reading.aqi, levelIdx);
+      await addSubscription(env.DB, chatId, newLocation.id);
+
+      const level = AQI_LEVELS[levelIdx];
+      await sendTelegramMessage(
+        env.TELEGRAM_BOT_TOKEN,
+        chatId,
+        `Added ${newLocation.name} (${slug}) and subscribed you. Current AQI is ${reading.aqi} (${level.emoji} ${level.name}).${dangerZoneNote(reading.aqi)}\n\nYou'll be notified when it crosses 50/100/150/200/300.`,
       );
       break;
     }

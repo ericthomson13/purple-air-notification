@@ -1,8 +1,10 @@
-# Get air quality alerts for Leadville, CO
+# Get air quality alerts for your area
 
 Get a message the moment the air quality changes enough to matter for your
 health — no app to install besides Telegram (which you may already have),
-no account to create, completely free.
+no account to create, completely free. Leadville, CO is set up out of the
+box, and you can add your own town too (see below) — you're not limited to
+just one location either.
 
 ## Step 1: Get Telegram
 
@@ -58,13 +60,36 @@ and when it's safe again. For example:
 
 More detail on any level: [airnow.gov/aqi/aqi-basics](https://www.airnow.gov/aqi/aqi-basics/)
 
+## Want alerts for a different town (or more than one)?
+
+You're not limited to Leadville, and you're not limited to just one place —
+subscribe to as many locations as you want.
+
+1. Go to [map.purpleair.com](https://map.purpleair.com/) in a browser, and
+   zoom to the town you care about.
+2. Click a sensor that looks reasonably placed (outdoors, not right next to
+   something like a wood stove or a garage).
+3. Look at the page's URL — it'll contain something like `?select=242389`.
+   That number is the **sensor index**.
+4. Send this to the bot (pick your own slug and name):
+   ```
+   /addlocation boulder-co 242389 Boulder, CO
+   ```
+   The slug (the first part) needs to be lowercase with hyphens, ending in
+   the 2-letter state code — like `boulder-co` or `salt-lake-city-ut`.
+
+The bot checks that sensor is real before adding it, then subscribes you
+right away and replies with the current AQI — same as Step 4 above. If
+someone already added that location, this just subscribes you to it instead
+of creating a duplicate.
+
 ## Managing your alerts
 
 Send any of these to the bot any time:
 
-- `/status` — check the current reading right now
-- `/unsubscribe leadville-co` — stop getting alerts
-- `/locations` — see what other locations are available
+- `/status` — check the current reading for everywhere you're subscribed
+- `/unsubscribe leadville-co` — stop getting alerts for a location
+- `/locations` — see what locations are already available
 
 ## Privacy
 

@@ -5,6 +5,13 @@ import type { LocationRow } from "./types";
 // How far back to look for a "was X ~Nm ago" comparison point.
 export const TREND_LOOKBACK_MINUTES = 30;
 
+// How recent a cached reading has to be before a user-triggered request
+// (e.g. /subscribe) will reuse it instead of hitting PurpleAir again. Keeps
+// a burst of subscribes to the same popular location from each costing a
+// separate PurpleAir API call - the scheduled poll already refreshes every
+// location on its own 15-min cadence regardless.
+const SUBSCRIBE_FRESHNESS_MINUTES = 5;
+
 const FIELDS = "pm2.5_cf_1_a,pm2.5_cf_1_b,humidity,temperature,last_seen,name";
 
 interface PurpleAirSensorResponse {
@@ -79,4 +86,22 @@ export async function refreshLocationReading(db: D1Database, location: LocationR
   await insertReadingHistory(db, location.id, reading.aqi, levelIdx);
 
   return { reading, levelIdx, past: past ?? null };
+}
+
+// Like refreshLocationReading, but reuses the cached D1 value (no PurpleAir
+// call) if it was checked within SUBSCRIBE_FRESHNESS_MINUTES. Used by
+// user-triggered paths (/subscribe, /addlocation on an existing slug) so a
+// burst of activity on one location doesn't turn into a burst of API calls.
+export async function getFreshReading(db: D1Database, location: LocationRow, apiKey: string) {
+  const cachedAgeMinutes = location.last_checked_at
+    ? (Date.now() - new Date(`${location.last_checked_at}Z`).getTime()) / 60_000
+    : Infinity;
+
+  if (cachedAgeMinutes < SUBSCRIBE_FRESHNESS_MINUTES && location.last_aqi !== null && location.last_level !== null) {
+    const past = await getPastReading(db, location.id, TREND_LOOKBACK_MINUTES);
+    return { aqi: location.last_aqi, levelIdx: location.last_level, past: past ?? null };
+  }
+
+  const { reading, levelIdx, past } = await refreshLocationReading(db, location, apiKey);
+  return { aqi: reading.aqi, levelIdx, past };
 }

@@ -1,5 +1,5 @@
-import { AQI_HEALTH_INFO_URL, AQI_LEVELS, levelForAqi } from "./aqi";
-import type { LocationRow } from "./types";
+import { AQI_HEALTH_INFO_URL, AQI_LEVELS, dangerZoneNote, levelForAqi } from "./aqi";
+import type { LocationRow, PastReading } from "./types";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -7,11 +7,6 @@ export interface TelegramUpdate {
     chat: { id: number };
     text?: string;
   };
-}
-
-export interface PastReading {
-  aqi: number;
-  checked_at: string;
 }
 
 // checked_at is a SQLite `datetime('now')` string (UTC, no timezone suffix).
@@ -60,7 +55,7 @@ export function formatStatus(location: LocationRow, past?: PastReading | null): 
     return `${location.name}: no reading yet.`;
   }
   const level = levelForAqi(location.last_aqi);
-  return `${level.emoji} <b>${location.name}</b>: AQI ${location.last_aqi}${formatPastNote(past)} (${level.name})\nLast checked: ${location.last_checked_at ?? "unknown"}`;
+  return `${level.emoji} <b>${location.name}</b>: AQI ${location.last_aqi}${formatPastNote(past)} (${level.name})\nLast checked: ${location.last_checked_at ?? "unknown"}${dangerZoneNote(location.last_aqi)}`;
 }
 
 export function formatLocationsList(locations: LocationRow[]): string {
