@@ -1,3 +1,4 @@
+import { AQI_LEVELS } from "./aqi";
 import {
   addSubscription,
   getLocationBySlug,
@@ -5,6 +6,7 @@ import {
   listSubscriptionsForChat,
   removeSubscription,
 } from "./db";
+import { refreshLocationReading } from "./purpleair";
 import { formatLocationsList, formatStatus, sendTelegramMessage, type TelegramUpdate } from "./telegram";
 import type { Env } from "./types";
 
@@ -47,7 +49,22 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
         break;
       }
       await addSubscription(env.DB, chatId, location.id);
-      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `Subscribed to ${location.name}. You'll be notified when its AQI crosses 50/100/150/200/300.`);
+
+      let aqiLine: string;
+      try {
+        const { reading, levelIdx } = await refreshLocationReading(env.DB, location, env.PURPLEAIR_API_KEY);
+        const level = AQI_LEVELS[levelIdx];
+        aqiLine = `Current AQI for ${location.name} is ${reading.aqi} (${level.emoji} ${level.name}).`;
+      } catch (err) {
+        console.error(`Failed to fetch current reading for ${location.slug}:`, err);
+        aqiLine = `Current AQI for ${location.name} isn't available right now — you'll get it on the next scheduled check.`;
+      }
+
+      await sendTelegramMessage(
+        env.TELEGRAM_BOT_TOKEN,
+        chatId,
+        `Thanks for signing up to our AQI bot leveraging PurpleAir data. ${aqiLine}\n\nYou'll be notified when it crosses 50/100/150/200/300.`,
+      );
       break;
     }
 

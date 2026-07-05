@@ -19,6 +19,9 @@ Ships with one location out of the box: **Leadville, CO**.
   Telegram chat subscribed to that location gets a message.
 - Subscription is entirely self-service through the Telegram bot — DM it,
   run `/subscribe leadville-co`, done. No website, no account to create.
+  `/subscribe` also fetches a fresh reading on the spot and replies with the
+  current AQI immediately, so you get instant confirmation the bot is
+  actually working instead of waiting for the next scheduled poll.
 - State (locations + subscriptions) lives in [Cloudflare D1](https://developers.cloudflare.com/d1/) (SQLite).
 
 ### Why this stack
@@ -180,8 +183,17 @@ DM your bot:
 /status
 ```
 
-You'll get a message automatically whenever that location's AQI crosses
-50, 100, 150, 200, or 300 in either direction.
+`/subscribe` immediately replies with something like:
+
+> Thanks for signing up to our AQI bot leveraging PurpleAir data. Current
+> AQI for Leadville, CO is 42 (🟢 Good).
+>
+> You'll be notified when it crosses 50/100/150/200/300.
+
+That's your confirmation the whole pipeline — PurpleAir key, sensor,
+Worker, D1, Telegram — is wired up correctly. After that, you'll get a
+message automatically whenever that location's AQI crosses 50, 100, 150,
+200, or 300 in either direction.
 
 ## Local development
 

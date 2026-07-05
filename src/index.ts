@@ -1,7 +1,6 @@
-import { levelIndexForAqi } from "./aqi";
 import { handleTelegramUpdate } from "./commands";
-import { addLocation, listLocations, listSubscriptionsForLocation, updateLocationReading } from "./db";
-import { fetchSensorReading } from "./purpleair";
+import { addLocation, listLocations, listSubscriptionsForLocation } from "./db";
+import { refreshLocationReading } from "./purpleair";
 import { formatAlert, sendTelegramMessage, type TelegramUpdate } from "./telegram";
 import type { Env } from "./types";
 
@@ -45,11 +44,8 @@ export async function pollLocations(env: Env): Promise<void> {
 
   for (const location of locations) {
     try {
-      const reading = await fetchSensorReading(location.sensor_index, env.PURPLEAIR_API_KEY);
-      const newLevelIdx = levelIndexForAqi(reading.aqi);
       const previousLevelIdx = location.last_level;
-
-      await updateLocationReading(env.DB, location.id, reading.aqi, newLevelIdx);
+      const { reading, levelIdx: newLevelIdx } = await refreshLocationReading(env.DB, location, env.PURPLEAIR_API_KEY);
 
       if (previousLevelIdx !== null && previousLevelIdx !== newLevelIdx) {
         const { results: subs } = await listSubscriptionsForLocation(env.DB, location.id);

@@ -1,4 +1,6 @@
-import { calcAqi } from "./aqi";
+import { calcAqi, levelIndexForAqi } from "./aqi";
+import { updateLocationReading } from "./db";
+import type { LocationRow } from "./types";
 
 const FIELDS = "pm2.5_cf_1_a,pm2.5_cf_1_b,humidity,temperature,last_seen,name";
 
@@ -58,4 +60,14 @@ export async function fetchSensorReading(sensorIndex: number, apiKey: string): P
     lastSeen: s.last_seen,
     staleSeconds,
   };
+}
+
+// Fetches a fresh reading for a location and records it in D1. Shared by the
+// scheduled poll and the /subscribe command, which both want the same
+// fetch-then-persist behavior.
+export async function refreshLocationReading(db: D1Database, location: LocationRow, apiKey: string) {
+  const reading = await fetchSensorReading(location.sensor_index, apiKey);
+  const levelIdx = levelIndexForAqi(reading.aqi);
+  await updateLocationReading(db, location.id, reading.aqi, levelIdx);
+  return { reading, levelIdx };
 }
