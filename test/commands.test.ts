@@ -183,6 +183,22 @@ describe("/subscribe", () => {
     expect(await countSubscriptionsForLocation(env.DB, location!.id)).toBe(1);
   });
 
+  // Regression test: TELEGRAM_BOT_USERNAME is documented as a bare username,
+  // but it's easy to paste the full t.me link from Telegram's UI when
+  // configuring the secret instead - that produced a doubled-up
+  // https://t.me/t.me/<username> share link.
+  it("doesn't double up the share link when TELEGRAM_BOT_USERNAME already has a t.me prefix", async () => {
+    await makeLocation("cmd-subscribe-doubled-co");
+    const { fn } = installMockFetch();
+
+    await handleTelegramUpdate(updateFor(7, "/subscribe cmd-subscribe-doubled-co"), testEnv({ TELEGRAM_BOT_USERNAME: "t.me/TestBot" }));
+
+    const text = telegramMessagesTo(fn, 7)[0];
+    expect(text).toContain("https://t.me/TestBot");
+    expect(text).not.toContain("t.me/t.me");
+    expect(text).not.toContain("t.me/https://");
+  });
+
   it("subscribing twice does not error or duplicate", async () => {
     await makeLocation("cmd-subscribe-twice-co");
     installMockFetch();
