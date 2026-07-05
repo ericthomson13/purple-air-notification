@@ -1,5 +1,5 @@
 import { handleTelegramUpdate } from "./commands";
-import { addLocation, listLocations, listSubscriptionsForLocation } from "./db";
+import { addLocation, listLocations, listSubscriptionsForLocation, purgeOldReadings } from "./db";
 import { refreshLocationReading } from "./purpleair";
 import { formatAlert, sendTelegramMessage, type TelegramUpdate } from "./telegram";
 import type { Env } from "./types";
@@ -45,16 +45,22 @@ export async function pollLocations(env: Env): Promise<void> {
   for (const location of locations) {
     try {
       const previousLevelIdx = location.last_level;
-      const { reading, levelIdx: newLevelIdx } = await refreshLocationReading(env.DB, location, env.PURPLEAIR_API_KEY);
+      const { reading, levelIdx: newLevelIdx, past } = await refreshLocationReading(env.DB, location, env.PURPLEAIR_API_KEY);
 
       if (previousLevelIdx !== null && previousLevelIdx !== newLevelIdx) {
         const { results: subs } = await listSubscriptionsForLocation(env.DB, location.id);
-        const text = formatAlert(location, reading.aqi, previousLevelIdx, newLevelIdx);
+        const text = formatAlert(location, reading.aqi, previousLevelIdx, newLevelIdx, past);
         await Promise.all(subs.map((sub) => sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, sub.chat_id, text)));
       }
     } catch (err) {
       console.error(`Failed to poll location ${location.slug}:`, err);
     }
+  }
+
+  try {
+    await purgeOldReadings(env.DB);
+  } catch (err) {
+    console.error("Failed to purge old readings:", err);
   }
 }
 

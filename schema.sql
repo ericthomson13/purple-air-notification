@@ -17,3 +17,18 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(chat_id, location_id)
 );
+
+-- One row per poll per location. Used to report "was X ~30m ago" alongside
+-- threshold-crossing alerts. Purged after 1 day (see purgeOldReadings in
+-- db.ts) since we only need recent history for trend context, not a
+-- long-term archive.
+CREATE TABLE IF NOT EXISTS readings_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  aqi INTEGER NOT NULL,
+  level INTEGER NOT NULL,
+  checked_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_readings_history_location_checked
+  ON readings_history(location_id, checked_at);

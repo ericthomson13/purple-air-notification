@@ -1,6 +1,9 @@
 import { calcAqi, levelIndexForAqi } from "./aqi";
-import { updateLocationReading } from "./db";
+import { getPastReading, insertReadingHistory, updateLocationReading } from "./db";
 import type { LocationRow } from "./types";
+
+// How far back to look for a "was X ~Nm ago" comparison point.
+export const TREND_LOOKBACK_MINUTES = 30;
 
 const FIELDS = "pm2.5_cf_1_a,pm2.5_cf_1_b,humidity,temperature,last_seen,name";
 
@@ -64,10 +67,16 @@ export async function fetchSensorReading(sensorIndex: number, apiKey: string): P
 
 // Fetches a fresh reading for a location and records it in D1. Shared by the
 // scheduled poll and the /subscribe command, which both want the same
-// fetch-then-persist behavior.
+// fetch-then-persist behavior. Also returns the closest reading from
+// ~TREND_LOOKBACK_MINUTES ago (if any) so callers can report "was X ~Nm ago".
 export async function refreshLocationReading(db: D1Database, location: LocationRow, apiKey: string) {
   const reading = await fetchSensorReading(location.sensor_index, apiKey);
   const levelIdx = levelIndexForAqi(reading.aqi);
+
+  const past = await getPastReading(db, location.id, TREND_LOOKBACK_MINUTES);
+
   await updateLocationReading(db, location.id, reading.aqi, levelIdx);
-  return { reading, levelIdx };
+  await insertReadingHistory(db, location.id, reading.aqi, levelIdx);
+
+  return { reading, levelIdx, past: past ?? null };
 }

@@ -16,13 +16,18 @@ Ships with one location out of the box: **Leadville, CO**.
   [2024-revised EPA breakpoints](https://www.epa.gov/system/files/documents/2024-02/pm-naaqs-air-quality-index-fact-sheet.pdf).
 - The result is compared against the location's last known AQI category. If
   the category changed (crossed 50/100/150/200/300 going up or down), every
-  Telegram chat subscribed to that location gets a message.
+  Telegram chat subscribed to that location gets a message like:
+  *"AQI has dropped below 100 — now 92 (was 150 ~32m ago)."* The "was X ~Nm
+  ago" context comes from a small `readings_history` log (one row per
+  location per poll), which is purged of anything older than a day — we
+  only need recent history for that comparison, not a long-term archive.
 - Subscription is entirely self-service through the Telegram bot — DM it,
   run `/subscribe leadville-co`, done. No website, no account to create.
   `/subscribe` also fetches a fresh reading on the spot and replies with the
   current AQI immediately, so you get instant confirmation the bot is
   actually working instead of waiting for the next scheduled poll.
-- State (locations + subscriptions) lives in [Cloudflare D1](https://developers.cloudflare.com/d1/) (SQLite).
+- State (locations + subscriptions + recent reading history) lives in
+  [Cloudflare D1](https://developers.cloudflare.com/d1/) (SQLite).
 
 ### Why this stack
 

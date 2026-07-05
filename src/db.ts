@@ -29,6 +29,29 @@ export function updateLocationReading(db: D1Database, locationId: number, aqi: n
     .run();
 }
 
+export function insertReadingHistory(db: D1Database, locationId: number, aqi: number, level: number) {
+  return db
+    .prepare("INSERT INTO readings_history (location_id, aqi, level) VALUES (?, ?, ?)")
+    .bind(locationId, aqi, level)
+    .run();
+}
+
+// Most recent reading at least `minutesAgo` old, for "was X ~Nm ago" context.
+export function getPastReading(db: D1Database, locationId: number, minutesAgo: number) {
+  return db
+    .prepare(
+      `SELECT aqi, checked_at FROM readings_history
+       WHERE location_id = ? AND checked_at <= datetime('now', ?)
+       ORDER BY checked_at DESC LIMIT 1`,
+    )
+    .bind(locationId, `-${minutesAgo} minutes`)
+    .first<{ aqi: number; checked_at: string }>();
+}
+
+export function purgeOldReadings(db: D1Database) {
+  return db.prepare("DELETE FROM readings_history WHERE checked_at < datetime('now', '-1 day')").run();
+}
+
 export function listSubscriptionsForLocation(db: D1Database, locationId: number) {
   return db.prepare("SELECT chat_id FROM subscriptions WHERE location_id = ?").bind(locationId).all<{ chat_id: number }>();
 }

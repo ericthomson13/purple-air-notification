@@ -2,12 +2,13 @@ import { AQI_LEVELS } from "./aqi";
 import {
   addSubscription,
   getLocationBySlug,
+  getPastReading,
   listLocations,
   listSubscriptionsForChat,
   removeSubscription,
 } from "./db";
-import { refreshLocationReading } from "./purpleair";
-import { formatLocationsList, formatStatus, sendTelegramMessage, type TelegramUpdate } from "./telegram";
+import { refreshLocationReading, TREND_LOOKBACK_MINUTES } from "./purpleair";
+import { formatLocationsList, formatPastNote, formatStatus, sendTelegramMessage, type TelegramUpdate } from "./telegram";
 import type { Env } from "./types";
 
 const WELCOME =
@@ -52,9 +53,9 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
 
       let aqiLine: string;
       try {
-        const { reading, levelIdx } = await refreshLocationReading(env.DB, location, env.PURPLEAIR_API_KEY);
+        const { reading, levelIdx, past } = await refreshLocationReading(env.DB, location, env.PURPLEAIR_API_KEY);
         const level = AQI_LEVELS[levelIdx];
-        aqiLine = `Current AQI for ${location.name} is ${reading.aqi} (${level.emoji} ${level.name}).`;
+        aqiLine = `Current AQI for ${location.name} is ${reading.aqi}${formatPastNote(past)} (${level.emoji} ${level.name}).`;
       } catch (err) {
         console.error(`Failed to fetch current reading for ${location.slug}:`, err);
         aqiLine = `Current AQI for ${location.name} isn't available right now — you'll get it on the next scheduled check.`;
@@ -93,7 +94,9 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
       const statuses = await Promise.all(
         subs.map(async (sub) => {
           const location = await getLocationBySlug(env.DB, sub.slug);
-          return location ? formatStatus(location) : `${sub.name}: not found`;
+          if (!location) return `${sub.name}: not found`;
+          const past = await getPastReading(env.DB, location.id, TREND_LOOKBACK_MINUTES);
+          return formatStatus(location, past);
         }),
       );
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, statuses.join("\n\n"));
