@@ -359,8 +359,28 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
         subs.map(async (sub) => {
           const location = await getLocationBySlug(env.DB, sub.slug);
           if (!location) return `${sub.name}: not found`;
-          const past = await getPastReading(env.DB, location.id, TREND_LOOKBACK_MINUTES);
-          return formatStatus(location, past);
+
+          // Refresh (or self-heal, via getFreshReading's divergence handling)
+          // before reading back location.last_aqi below - otherwise /status
+          // would just echo whatever bogus value a diverging sensor last
+          // wrote to D1 instead of catching it.
+          let swapNote = "";
+          try {
+            const { swappedTo } = await getFreshReading(env.DB, location, env.PURPLEAIR_API_KEY);
+            if (swappedTo) {
+              swapNote = ` (switched to a nearby sensor: "${swappedTo.name}" after the old one reported inconsistent data)`;
+            }
+          } catch (err) {
+            console.error(`Failed to refresh reading for ${location.slug} during /status:`, err);
+            if (err instanceof SensorDivergenceError) {
+              return `${location.name}: its PurpleAir sensor is reporting inconsistent data and no healthy sensor was found nearby. Reach out to whoever runs this bot to get it updated.`;
+            }
+            // Transient API failure, not a data-quality problem - fall back to whatever's cached.
+          }
+
+          const fresh = (await getLocationBySlug(env.DB, location.slug)) ?? location;
+          const past = await getPastReading(env.DB, fresh.id, TREND_LOOKBACK_MINUTES);
+          return formatStatus(fresh, past, swapNote);
         }),
       );
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, statuses.join("\n\n"));

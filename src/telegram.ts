@@ -50,12 +50,12 @@ export function formatAlert(
   );
 }
 
-export function formatStatus(location: LocationRow, past?: PastReading | null): string {
+export function formatStatus(location: LocationRow, past?: PastReading | null, swapNote?: string): string {
   if (location.last_aqi === null || location.last_level === null) {
     return `${location.name}: no reading yet.`;
   }
   const level = levelForAqi(location.last_aqi);
-  return `${level.emoji} <b>${location.name}</b>: AQI ${location.last_aqi}${formatPastNote(past)} (${level.name})\nLast checked: ${location.last_checked_at ?? "unknown"}${dangerZoneNote(location.last_aqi)}`;
+  return `${level.emoji} <b>${location.name}</b>: AQI ${location.last_aqi}${formatPastNote(past)} (${level.name})${swapNote ?? ""}\nLast checked: ${location.last_checked_at ?? "unknown"}${dangerZoneNote(location.last_aqi)}`;
 }
 
 export function formatLocationsList(locations: LocationRow[]): string {
