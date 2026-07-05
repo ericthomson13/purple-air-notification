@@ -1,8 +1,20 @@
 import { handleTelegramUpdate } from "./commands";
-import { addLocation, listLocations, listSubscriptionsForLocation, purgeOldReadings } from "./db";
+import {
+  addLocation,
+  countAllSubscriptions,
+  countDistinctSubscribers,
+  countLocations,
+  listLocations,
+  listSubscriptionsForLocation,
+  purgeOldReadings,
+} from "./db";
 import { refreshLocationReading } from "./purpleair";
 import { formatAlert, sendTelegramMessage, type TelegramUpdate } from "./telegram";
 import type { Env } from "./types";
+
+// Must match wrangler.jsonc's second cron entry exactly - used to tell the
+// two scheduled triggers apart in a single scheduled() handler.
+const DAILY_DIGEST_CRON = "0 15 * * 1-5";
 
 async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
@@ -65,6 +77,23 @@ export async function pollLocations(env: Env): Promise<void> {
   }
 }
 
+// Lightweight subscriber-count check-in for the operator, since PurpleAir/
+// Cloudflare usage barely scales with user count - this is just for
+// tracking growth day to day, not a cost/capacity signal. No-ops if
+// ADMIN_CHAT_ID isn't configured.
+export async function sendDailySubscriberDigest(env: Env): Promise<void> {
+  if (!env.ADMIN_CHAT_ID) return;
+
+  const [locations, subscriptions, distinctUsers] = await Promise.all([
+    countLocations(env.DB),
+    countAllSubscriptions(env.DB),
+    countDistinctSubscribers(env.DB),
+  ]);
+
+  const text = `📊 Daily update: ${subscriptions} subscription(s) across ${locations} location(s) (${distinctUsers} unique user(s)).`;
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, Number(env.ADMIN_CHAT_ID), text);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -81,7 +110,11 @@ export default {
     return new Response("Not found", { status: 404 });
   },
 
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(pollLocations(env));
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (controller.cron === DAILY_DIGEST_CRON) {
+      ctx.waitUntil(sendDailySubscriberDigest(env));
+    } else {
+      ctx.waitUntil(pollLocations(env));
+    }
   },
 };

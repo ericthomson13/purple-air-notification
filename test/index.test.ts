@@ -1,7 +1,7 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addLocation, addSubscription, getLocationBySlug } from "../src/db";
-import worker, { pollLocations } from "../src/index";
+import worker, { pollLocations, sendDailySubscriberDigest } from "../src/index";
 import type { Env } from "../src/types";
 
 function sensorResponse(pm25: number, humidity = 40, temperature = 20) {
@@ -287,5 +287,74 @@ describe("pollLocations", () => {
     // the failing location's reading should not have been updated
     const failedLocation = await getLocationBySlug(env.DB, "poll-fail-co");
     expect(failedLocation?.last_level).toBe(0);
+  });
+});
+
+describe("sendDailySubscriberDigest", () => {
+  beforeEach(async () => {
+    await env.DB.batch([env.DB.prepare("DELETE FROM subscriptions"), env.DB.prepare("DELETE FROM locations")]);
+  });
+
+  it("DMs ADMIN_CHAT_ID with subscription/location/user counts", async () => {
+    const a = await makeLocation("digest-a-co", 0, 0);
+    const b = await makeLocation("digest-b-co", 0, 0);
+    await addSubscription(env.DB, 701, a.id);
+    await addSubscription(env.DB, 701, b.id); // same user, two locations
+    await addSubscription(env.DB, 702, a.id);
+
+    const fn = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fn);
+
+    await sendDailySubscriberDigest(testEnv({ ADMIN_CHAT_ID: "999" }));
+
+    const sends = telegramSends(fn);
+    expect(sends).toHaveLength(1);
+    expect(sends[0].chatId).toBe(999);
+    expect(sends[0].text).toContain("3 subscription(s)");
+    expect(sends[0].text).toContain("2 location(s)");
+    expect(sends[0].text).toContain("2 unique user(s)");
+  });
+
+  it("does nothing when ADMIN_CHAT_ID isn't set", async () => {
+    const fn = vi.fn();
+    vi.stubGlobal("fetch", fn);
+
+    await sendDailySubscriberDigest(testEnv());
+
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("scheduled() cron branching", () => {
+  beforeEach(async () => {
+    await env.DB.batch([env.DB.prepare("DELETE FROM subscriptions"), env.DB.prepare("DELETE FROM locations")]);
+  });
+
+  it("runs the daily digest (not the AQI poll) on the digest cron", async () => {
+    await makeLocation("cron-digest-co", 0, 0);
+    const fn = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fn);
+
+    const ctx = createExecutionContext();
+    await worker.scheduled({ cron: "0 15 * * 1-5" } as ScheduledController, testEnv({ ADMIN_CHAT_ID: "999" }), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Only the digest DM should have gone out - no PurpleAir fetch for the poll.
+    expect(fn.mock.calls.every(([input]: any[]) => String(typeof input === "string" ? input : input.url ?? input).includes("api.telegram.org"))).toBe(true);
+    expect(telegramSends(fn).some((s) => s.text.includes("subscription(s)"))).toBe(true);
+  });
+
+  it("runs the AQI poll (not the digest) on any other cron", async () => {
+    const location = await makeLocation("cron-poll-co", 40, 0);
+    await addSubscription(env.DB, 801, location.id);
+    const fn = vi.fn().mockImplementation(async () => sensorResponse(120));
+    vi.stubGlobal("fetch", fn);
+
+    const ctx = createExecutionContext();
+    await worker.scheduled({ cron: "*/10 * * * *" } as ScheduledController, testEnv({ ADMIN_CHAT_ID: "999" }), ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(telegramSends(fn).some((s) => s.text.includes("risen above"))).toBe(true);
+    expect(telegramSends(fn).some((s) => s.text.includes("subscription(s)"))).toBe(false);
   });
 });

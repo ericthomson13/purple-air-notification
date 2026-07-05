@@ -7,7 +7,12 @@
     "enabled": true
   },
   "triggers": {
-    "crons": ["*/10 * * * *"]
+    // "*/10 * * * *": the AQI poll, every 10 min.
+    // "0 15 * * 1-5": daily subscriber-count digest to ADMIN_CHAT_ID, 9am
+    // Mountain (MDT, UTC-6) Mon-Fri. Cloudflare cron is fixed UTC - this
+    // drifts to 8am Mountain across the MST (UTC-7) part of the year;
+    // adjust the hour by 1 after DST changes if that matters to you.
+    "crons": ["*/10 * * * *", "0 15 * * 1-5"]
   },
   "d1_databases": [
     {

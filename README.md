@@ -44,6 +44,12 @@ Just want to subscribe rather than run this yourself? See
   to what that level means health-wise, not just in threshold-crossing alerts.
 - State (locations + subscriptions + recent reading history) lives in
   [Cloudflare D1](https://developers.cloudflare.com/d1/) (SQLite).
+- A second Cron Trigger (`0 15 * * 1-5` — 9am Mountain, Mon-Fri; drifts an
+  hour across the MST/MDT DST change since Cloudflare cron is fixed UTC) DMs
+  `ADMIN_CHAT_ID` a one-line subscriber-count digest (total subscriptions,
+  locations, unique users) so you can track growth day to day. No-ops if
+  `ADMIN_CHAT_ID` isn't set. The `scheduled()` handler tells the two
+  triggers apart via `controller.cron` (see `src/index.ts`).
 
 ### Why this stack
 
@@ -157,13 +163,17 @@ npm run webhook:status   # confirms Telegram sees it - "url" should match WORKER
 ```
 
 Both read `TELEGRAM_BOT_TOKEN` / `TELEGRAM_WEBHOOK_SECRET` / `WORKER_URL`
-from `.env`, so there's nothing to copy-paste by hand. If you'd rather do it
-manually:
+from `.env`, so there's nothing to copy-paste by hand. `webhook:set` also
+passes `allowed_updates=["message"]`, so Telegram only forwards actual
+messages — not every update type (e.g. "user blocked the bot") the API
+sends by default, which would otherwise trigger a Worker invocation the
+handler just ignores. If you'd rather do it manually:
 
 ```bash
 curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   -d "url=https://<your-worker>.workers.dev/webhook/telegram" \
-  -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+  -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>" \
+  --data-urlencode 'allowed_updates=["message"]'
 ```
 
 ### 7. Configure the bot's profile in Telegram

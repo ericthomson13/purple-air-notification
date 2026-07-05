@@ -84,6 +84,16 @@ export async function countSubscriptionsForLocation(db: D1Database, locationId: 
   return row?.count ?? 0;
 }
 
+export async function countAllSubscriptions(db: D1Database): Promise<number> {
+  const row = await db.prepare("SELECT COUNT(*) as count FROM subscriptions").first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
+export async function countDistinctSubscribers(db: D1Database): Promise<number> {
+  const row = await db.prepare("SELECT COUNT(DISTINCT chat_id) as count FROM subscriptions").first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
 export function listSubscriptionsForChat(db: D1Database, chatId: number) {
   return db
     .prepare(

@@ -19,7 +19,8 @@ fi
 
 response="$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
   -d "url=${WORKER_URL}/webhook/telegram" \
-  -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}")"
+  -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
+  --data-urlencode 'allowed_updates=["message"]')"
 
 echo "$response"
 
