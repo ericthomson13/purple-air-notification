@@ -10,6 +10,7 @@ import {
   insertReadingHistory,
   listLocations,
   listSubscriptionsForChat,
+  listSubscriptionsForLocation,
   removeSubscription,
   updateLocationReading,
 } from "./db";
@@ -130,7 +131,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
     }
 
     case "/subscribe": {
-      const slug = args[0];
+      const slug = args[0]?.toLowerCase();
       if (!slug) {
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Usage: /subscribe &lt;slug&gt; (see /locations)");
         break;
@@ -150,7 +151,8 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
     }
 
     case "/addlocation": {
-      const [slug, ...rest] = args;
+      const [slugRaw, ...rest] = args;
+      const slug = slugRaw?.toLowerCase();
 
       if (!slug) {
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, ADD_LOCATION_USAGE);
@@ -292,7 +294,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
     }
 
     case "/removelocation": {
-      const slug = args[0];
+      const slug = args[0]?.toLowerCase();
       if (!slug) {
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Usage: /removelocation &lt;slug&gt; — only the chat that added a location can remove it.");
         break;
@@ -311,17 +313,17 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
         break;
       }
 
-      const subscriberCount = await countSubscriptionsForLocation(env.DB, location.id);
+      const { results: subscribers } = await listSubscriptionsForLocation(env.DB, location.id);
       await deleteLocation(env.DB, location.id);
 
-      const otherSubscribers = subscriberCount - 1; // the remover was very likely subscribed themselves
+      const otherSubscribers = subscribers.filter((s) => s.chat_id !== chatId).length;
       const impactNote = otherSubscribers > 0 ? ` Note: ${otherSubscribers} other subscriber(s) will no longer get alerts for it.` : "";
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `Removed ${location.name} (${slug}).${impactNote}`);
       break;
     }
 
     case "/unsubscribe": {
-      const slug = args[0];
+      const slug = args[0]?.toLowerCase();
       if (!slug) {
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, "Usage: /unsubscribe &lt;slug&gt;");
         break;

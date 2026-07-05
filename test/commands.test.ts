@@ -145,6 +145,17 @@ describe("/subscribe", () => {
     const location = await getLocationBySlug(env.DB, "cmd-subscribe-twice-co");
     expect(await countSubscriptionsForLocation(env.DB, location!.id)).toBe(1);
   });
+
+  // Regression test: slugs are stored lowercase, but users don't reliably
+  // type them that way - a mismatched case must not read as "unknown".
+  it("matches an existing location regardless of the case typed", async () => {
+    await makeLocation("cmd-case-co");
+    const { fn } = installMockFetch();
+
+    await handleTelegramUpdate(updateFor(4, "/subscribe Cmd-Case-CO"), testEnv());
+
+    expect(telegramMessagesTo(fn, 4)[0]).toContain("Thanks for signing up");
+  });
 });
 
 describe("/addlocation", () => {
@@ -158,6 +169,14 @@ describe("/addlocation", () => {
     const { fn } = installMockFetch();
     await handleTelegramUpdate(updateFor(1, "/addlocation NotASlug"), testEnv());
     expect(telegramMessagesTo(fn, 1)[0]).toContain("city-state format");
+  });
+
+  it("accepts a validly-shaped slug regardless of case", async () => {
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(16, "/addlocation Auto-Case-CO"), testEnv());
+
+    expect(telegramMessagesTo(fn, 16)[0]).toContain("Added");
+    expect(await getLocationBySlug(env.DB, "auto-case-co")).not.toBeNull();
   });
 
   it("auto-discovery: geocodes, finds the nearest sensor, creates and subscribes", async () => {
@@ -266,6 +285,20 @@ describe("/removelocation", () => {
     expect(text).toContain("Removed");
     expect(text).toContain("1 other subscriber");
     expect(await getLocationBySlug(env.DB, "cmd-remove-owner-co")).toBeNull();
+  });
+
+  // Regression test: the "other subscribers" count must reflect who's
+  // actually still subscribed, not assume the owner is one of them.
+  it("counts other subscribers accurately even if the owner already unsubscribed", async () => {
+    const location = await makeLocation("cmd-remove-unsubbed-owner-co", 99);
+    await addSubscription(env.DB, 201, location.id);
+    await addSubscription(env.DB, 202, location.id);
+    // owner never subscribed to their own location in this scenario
+
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(99, "/removelocation cmd-remove-unsubbed-owner-co"), testEnv());
+
+    expect(telegramMessagesTo(fn, 99)[0]).toContain("2 other subscriber");
   });
 });
 
