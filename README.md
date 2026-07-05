@@ -44,6 +44,16 @@ These map almost exactly onto the [2024-revised EPA PM2.5 AQI breakpoints](https
 
 ## Setup
 
+You'll end up setting four secrets on the Worker. Only one of them actually
+comes from an external service — the other three you generate yourself:
+
+| Env var | Where it comes from |
+|---|---|
+| `PURPLEAIR_API_KEY` | PurpleAir — see [step 2](#2-get-a-purpleair-api-read-key) |
+| `TELEGRAM_BOT_TOKEN` | BotFather — the token it gives you after `/newbot` |
+| `TELEGRAM_WEBHOOK_SECRET` | **You generate this** (e.g. `openssl rand -hex 24`) — verifies incoming webhook requests really came from Telegram |
+| `ADMIN_TOKEN` | **You generate this** too — protects the `/admin/locations` endpoint |
+
 ### 1. Prerequisites
 
 - Node.js 18+ and npm
@@ -69,9 +79,8 @@ You'll get back a key that looks like a UUID. That's `PURPLEAIR_API_KEY` below.
 ### 3. Create a Telegram bot
 
 1. Open Telegram, message [@BotFather](https://t.me/BotFather), send `/newbot`, follow the prompts.
-2. BotFather gives you a token like `123456789:AAExampleTokenValue`. That's `TELEGRAM_BOT_TOKEN`.
-3. Pick a random secret string yourself (e.g. `openssl rand -hex 24`) — that's `TELEGRAM_WEBHOOK_SECRET`, used to verify incoming webhook requests really came from Telegram.
-4. Pick another random string for `ADMIN_TOKEN` (protects the `/admin/locations` endpoint you'll use to add locations).
+2. BotFather gives you a token like `123456789:AAExampleTokenValue`. That's your only externally-issued secret — `TELEGRAM_BOT_TOKEN`.
+3. Generate `TELEGRAM_WEBHOOK_SECRET` and `ADMIN_TOKEN` yourself (see the table above) — BotFather has nothing to do with these two.
 
 ### 4. Create the D1 database and apply the schema
 
@@ -83,6 +92,10 @@ npm run db:migrate:remote
 ```
 
 ### 5. Set secrets and deploy
+
+Run these in your own terminal (not through an AI assistant or shared
+session) — each prompts for the value and stores it encrypted on Cloudflare,
+never in `wrangler.jsonc` or git:
 
 ```bash
 npx wrangler secret put PURPLEAIR_API_KEY
@@ -106,12 +119,27 @@ curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 ### 7. Add a location
 
 PurpleAir doesn't offer a search-by-city-name API, so finding a sensor is a
-manual, one-time step per location:
+manual, one-time step per location. Two ways to do it:
 
-1. Go to [map.purpleair.com](https://map.purpleair.com/), zoom to the town/area you care about.
-2. Click a sensor that looks well-placed (outdoors, not next to an obvious pollution source like a wood stove chimney or a garage).
-3. Its **Sensor Index** is in the popup / the page URL (`?select=<sensor_index>`).
-4. Register it:
+**Option A — the map (visual, easiest for one-off lookups).** Go to
+[map.purpleair.com](https://map.purpleair.com/), zoom to the town/area you
+care about, and click a sensor that looks well-placed (outdoors, not next to
+an obvious pollution source like a wood stove chimney or a garage). Its
+**Sensor Index** is in the popup / the page URL (`?select=<sensor_index>`).
+
+**Option B — the API (scriptable, useful if you're adding several locations).**
+Query sensors inside a bounding box around your target lat/lon:
+
+```bash
+curl -s "https://api.purpleair.com/v1/sensors?fields=name,latitude,longitude,last_seen&nwlat=<NW_LAT>&nwlng=<NW_LNG>&selat=<SE_LAT>&selng=<SE_LNG>" \
+  -H "X-API-Key: <PURPLEAIR_API_KEY>" | python3 -m json.tool
+```
+
+The response has a `fields` array and a `data` array of rows — the first
+value in each row is always the `sensor_index`. Pick one with a recent
+`last_seen` timestamp.
+
+Either way, once you have a `sensor_index`, register it:
 
 ```bash
 curl -X POST "https://<your-worker>.workers.dev/admin/locations" \
