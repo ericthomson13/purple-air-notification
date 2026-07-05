@@ -6,7 +6,7 @@ Data comes from [PurpleAir](https://www2.purpleair.com/) community sensors.
 Ships with one location out of the box: **Leadville, CO** — but anyone can
 add and subscribe to additional locations (or a single location that isn't
 Leadville) straight from the bot, and subscribe to more than one at a time.
-See [Adding a location](#7-add-a-location) below.
+See [Adding a location](#8-add-a-location) below.
 
 Just want to subscribe rather than run this yourself? See
 [docs/user-guide.md](./docs/user-guide.md) for a non-technical signup walkthrough.
@@ -35,7 +35,7 @@ Just want to subscribe rather than run this yourself? See
   can be subscribed to any number of locations at once — there's no
   one-location-per-user limit.
 - Anyone can add a new location themselves with `/addlocation`, no admin
-  required — see [Adding a location](#7-add-a-location). To keep PurpleAir
+  required — see [Adding a location](#8-add-a-location). To keep PurpleAir
   API usage bounded (the scheduled poll fetches *every* registered location
   every 10 minutes, forever, regardless of how many people subscribe to
   each one), total locations are capped at 50 (`MAX_LOCATIONS` in
@@ -166,7 +166,21 @@ curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
 ```
 
-### 7. Add a location
+### 7. Configure the bot's profile in Telegram
+
+```bash
+npm run bot:profile
+```
+
+Sets the command list (so Telegram shows a "/" menu with descriptions),
+bot description, and short description — the same things you'd otherwise
+configure by messaging `/setcommands`, `/setdescription`, and
+`/setshortdescription` to [@BotFather](https://t.me/BotFather) directly.
+This calls Telegram's Bot API (`setMyCommands` etc.) straight from
+`TELEGRAM_BOT_TOKEN` in `.env`, so there's no chat-based setup needed.
+Safe to re-run any time — e.g. after adding a new command.
+
+### 8. Add a location
 
 The easy path — just the slug, no technical steps required. DM the bot:
 
@@ -232,7 +246,7 @@ insert. Leadville, CO ships as the reference example; you'll need to
 register a real `sensorIndex` for it (or any other town) using either path
 above, since sensor IDs can change as sensors go offline or get replaced.
 
-### 8. Try it
+### 9. Try it
 
 DM your bot:
 

@@ -11,6 +11,7 @@
     "postdeploy": "bash scripts/notify-deploy.sh",
     "webhook:set": "bash scripts/set-webhook.sh",
     "webhook:status": "bash scripts/webhook-status.sh",
+    "bot:profile": "bash scripts/set-bot-profile.sh",
     "typecheck": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
