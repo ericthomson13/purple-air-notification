@@ -5,6 +5,9 @@ significant threshold — 50, 100, 150, 200, or 300 — in either direction.
 Data comes from [PurpleAir](https://www2.purpleair.com/) community sensors.
 Ships with one location out of the box: **Leadville, CO**.
 
+Just want to subscribe rather than run this yourself? See
+[docs/user-guide.md](./docs/user-guide.md) for a non-technical signup walkthrough.
+
 ## How it works
 
 - A [Cloudflare Worker](https://developers.cloudflare.com/workers/) runs on a
