@@ -156,6 +156,81 @@ describe("/subscribe", () => {
 
     expect(telegramMessagesTo(fn, 4)[0]).toContain("Thanks for signing up");
   });
+
+  // Regression coverage for a real incident: a sensor's A/B channels can
+  // diverge so badly the averaged reading is garbage (e.g. one channel
+  // fouled by dust reads 4593 while the other reads 3, averaging to an AQI
+  // over 6000). The bot should self-heal by swapping to a nearby healthy
+  // sensor rather than reporting - or alerting on - a bogus reading.
+  function divergentSensorResponse() {
+    return new Response(
+      JSON.stringify({
+        sensor: {
+          name: "Diverging Sensor",
+          "pm2.5_cf_1_a": 4593,
+          "pm2.5_cf_1_b": 3,
+          humidity: 40,
+          temperature: 20,
+          last_seen: Math.floor(Date.now() / 1000) - 60,
+          latitude: 40.0,
+          longitude: -105.0,
+        },
+      }),
+      { status: 200 },
+    );
+  }
+
+  it("swaps to a nearby healthy sensor when the current one diverges, and tells the user", async () => {
+    await makeLocation("cmd-heal-co"); // sensor_index 123 (see makeLocation)
+    const fn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes("api.telegram.org")) return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+      if (url.includes("/v1/sensors/123?")) return divergentSensorResponse();
+      if (url.includes("/v1/sensors?")) {
+        return new Response(
+          JSON.stringify({
+            fields: ["sensor_index", "name", "latitude", "longitude", "last_seen", "pm2.5_cf_1_a", "pm2.5_cf_1_b"],
+            data: [[456, "Healthy Nearby", 40.001, -105.001, Math.floor(Date.now() / 1000), 10, 12]],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/v1/sensors/456?")) return sensorResponse();
+      throw new Error(`Unexpected fetch to ${url}`);
+    });
+    vi.stubGlobal("fetch", fn);
+
+    await handleTelegramUpdate(updateFor(5, "/subscribe cmd-heal-co"), testEnv());
+
+    const text = telegramMessagesTo(fn, 5)[0];
+    expect(text).toContain("switched it to a nearby one");
+    expect(text).toContain("Healthy Nearby");
+
+    const location = await getLocationBySlug(env.DB, "cmd-heal-co");
+    expect(location?.sensor_index).toBe(456);
+  });
+
+  it("tells the user to reach out to the bot owner when no healthy sensor is nearby", async () => {
+    await makeLocation("cmd-heal-none-co");
+    const fn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes("api.telegram.org")) return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+      if (url.includes("/v1/sensors/123?")) return divergentSensorResponse();
+      if (url.includes("/v1/sensors?")) {
+        return new Response(JSON.stringify({ fields: ["sensor_index", "name", "latitude", "longitude", "last_seen"], data: [] }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch to ${url}`);
+    });
+    vi.stubGlobal("fetch", fn);
+
+    await handleTelegramUpdate(updateFor(6, "/subscribe cmd-heal-none-co"), testEnv());
+
+    const text = telegramMessagesTo(fn, 6)[0];
+    expect(text).toContain("Reach out to whoever runs this bot");
+
+    const location = await getLocationBySlug(env.DB, "cmd-heal-none-co");
+    expect(location?.sensor_index).toBe(123);
+  });
 });
 
 describe("/addlocation", () => {

@@ -45,6 +45,12 @@ export function deleteLocation(db: D1Database, locationId: number) {
   ]);
 }
 
+// Used when a location's sensor turns out to be unreliable (e.g. diverging
+// A/B channels) and gets swapped for a healthier nearby one.
+export function updateLocationSensor(db: D1Database, locationId: number, sensorIndex: number) {
+  return db.prepare("UPDATE locations SET sensor_index = ? WHERE id = ?").bind(sensorIndex, locationId).run();
+}
+
 export function updateLocationReading(db: D1Database, locationId: number, aqi: number, level: number) {
   return db
     .prepare("UPDATE locations SET last_aqi = ?, last_level = ?, last_checked_at = datetime('now') WHERE id = ?")

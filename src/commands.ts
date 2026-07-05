@@ -15,7 +15,7 @@ import {
   updateLocationReading,
 } from "./db";
 import { geocodeCityState } from "./geocode";
-import { fetchSensorReading, findNearestSensor, getFreshReading, TREND_LOOKBACK_MINUTES } from "./purpleair";
+import { fetchSensorReading, findNearestSensor, getFreshReading, SensorDivergenceError, TREND_LOOKBACK_MINUTES } from "./purpleair";
 import { formatLocationsList, formatPastNote, formatStatus, sendTelegramMessage, type TelegramUpdate } from "./telegram";
 import type { Env, LocationRow } from "./types";
 
@@ -70,7 +70,12 @@ function parseSlug(slug: string): { city: string; state: string } {
 // SUBSCRIBER_HARD_CAP for the one real per-location limit), it's cheap to
 // encourage sharing - included on subscription-confirmation messages.
 function shareLine(env: Env): string {
-  return `\n\nKnow someone else who'd find this useful? Share the bot: https://t.me/${env.TELEGRAM_BOT_USERNAME}`;
+  // TELEGRAM_BOT_USERNAME is meant to be a bare username, but it's easy to
+  // accidentally paste the full https://t.me/<username> link from Telegram's
+  // UI when configuring the secret - strip that back down so we don't end
+  // up with a doubled-up link like https://t.me/https://t.me/foo.
+  const username = env.TELEGRAM_BOT_USERNAME.replace(/^(https?:\/\/)?t\.me\//i, "").replace(/^@/, "");
+  return `\n\nKnow someone else who'd find this useful? Share the bot: https://t.me/${username}`;
 }
 
 // Warns when a location's subscriber count crosses the point where
@@ -102,11 +107,17 @@ async function subscribeAndDescribeAqi(env: Env, chatId: number, location: Locat
   await addSubscription(env.DB, chatId, location.id);
   await checkSubscriberSafetyNet(env, location);
   try {
-    const { aqi, levelIdx, past } = await getFreshReading(env.DB, location, env.PURPLEAIR_API_KEY);
+    const { aqi, levelIdx, past, swappedTo } = await getFreshReading(env.DB, location, env.PURPLEAIR_API_KEY);
     const level = AQI_LEVELS[levelIdx];
-    return `Current AQI for ${location.name} is ${aqi}${formatPastNote(past)} (${level.emoji} ${level.name}).${dangerZoneNote(aqi)}`;
+    const swapNote = swappedTo
+      ? ` (Note: ${location.name}'s old PurpleAir sensor was reporting inconsistent data, so we've switched it to a nearby one: "${swappedTo.name}".)`
+      : "";
+    return `Current AQI for ${location.name} is ${aqi}${formatPastNote(past)} (${level.emoji} ${level.name}).${dangerZoneNote(aqi)}${swapNote}`;
   } catch (err) {
     console.error(`Failed to fetch current reading for ${location.slug}:`, err);
+    if (err instanceof SensorDivergenceError) {
+      return `Current AQI for ${location.name} isn't available — its PurpleAir sensor is reporting inconsistent data and no healthy sensor was found nearby to switch to. Reach out to whoever runs this bot to get it updated.`;
+    }
     return `Current AQI for ${location.name} isn't available right now — you'll get it on the next scheduled check.`;
   }
 }
@@ -256,11 +267,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
         reading = await fetchSensorReading(sensorIndex, env.PURPLEAIR_API_KEY);
       } catch (err) {
         console.error(`Failed to validate sensor ${sensorIndex} for new location ${slug}:`, err);
-        await sendTelegramMessage(
-          env.TELEGRAM_BOT_TOKEN,
-          chatId,
-          `Couldn't read sensor_index ${sensorIndex} from PurpleAir — it may be offline. Double check at https://map.purpleair.com and try again.`,
-        );
+        const message =
+          err instanceof SensorDivergenceError
+            ? `sensor_index ${sensorIndex}'s two PM2.5 channels disagree too much to trust — it may be malfunctioning. Pick a different sensor at https://map.purpleair.com and try again.`
+            : `Couldn't read sensor_index ${sensorIndex} from PurpleAir — it may be offline. Double check at https://map.purpleair.com and try again.`;
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, message);
         break;
       }
 
