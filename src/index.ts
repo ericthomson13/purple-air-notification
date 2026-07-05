@@ -13,15 +13,28 @@ import { formatAlert, sendTelegramMessage, type TelegramUpdate } from "./telegra
 import type { Env } from "./types";
 
 // Must match wrangler.jsonc's second cron entry exactly - used to tell the
-// two scheduled triggers apart in a single scheduled() handler.
-const DAILY_DIGEST_CRON = "0 15 * * 1-5";
+// two scheduled triggers apart in a single scheduled() handler. Exported so
+// a test can assert it actually matches wrangler.jsonc, since nothing else
+// catches the two silently drifting apart.
+export const DAILY_DIGEST_CRON = "0 15 * * 1-5";
+
+async function parseJsonBody<T>(request: Request): Promise<T | null> {
+  try {
+    return (await request.json()) as T;
+  } catch {
+    return null;
+  }
+}
 
 async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
   if (secret !== env.TELEGRAM_WEBHOOK_SECRET) {
     return new Response("Forbidden", { status: 403 });
   }
-  const update = (await request.json()) as TelegramUpdate;
+  const update = await parseJsonBody<TelegramUpdate>(request);
+  if (!update) {
+    return new Response("Invalid JSON body", { status: 400 });
+  }
   await handleTelegramUpdate(update, env);
   return new Response("ok");
 }
@@ -31,18 +44,18 @@ async function handleAddLocation(request: Request, env: Env): Promise<Response> 
   if (auth !== `Bearer ${env.ADMIN_TOKEN}`) {
     return new Response("Forbidden", { status: 403 });
   }
-  const body = (await request.json()) as {
+  const body = await parseJsonBody<{
     slug: string;
     name: string;
     sensorIndex: number;
     lat?: number;
     lon?: number;
-  };
-  if (!body.slug || !body.name || !body.sensorIndex) {
-    return new Response("slug, name, and sensorIndex are required", { status: 400 });
+  }>(request);
+  if (!body?.slug || !body.name || !body.sensorIndex) {
+    return new Response("Invalid JSON body - slug, name, and sensorIndex are required", { status: 400 });
   }
   await addLocation(env.DB, {
-    slug: body.slug,
+    slug: body.slug.toLowerCase(), // keep consistent with the self-service /addlocation path
     name: body.name,
     sensorIndex: body.sensorIndex,
     lat: body.lat ?? null,
@@ -84,14 +97,18 @@ export async function pollLocations(env: Env): Promise<void> {
 export async function sendDailySubscriberDigest(env: Env): Promise<void> {
   if (!env.ADMIN_CHAT_ID) return;
 
-  const [locations, subscriptions, distinctUsers] = await Promise.all([
-    countLocations(env.DB),
-    countAllSubscriptions(env.DB),
-    countDistinctSubscribers(env.DB),
-  ]);
+  try {
+    const [locations, subscriptions, distinctUsers] = await Promise.all([
+      countLocations(env.DB),
+      countAllSubscriptions(env.DB),
+      countDistinctSubscribers(env.DB),
+    ]);
 
-  const text = `📊 Daily update: ${subscriptions} subscription(s) across ${locations} location(s) (${distinctUsers} unique user(s)).`;
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, Number(env.ADMIN_CHAT_ID), text);
+    const text = `📊 Daily update: ${subscriptions} subscription(s) across ${locations} location(s) (${distinctUsers} unique user(s)).`;
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, Number(env.ADMIN_CHAT_ID), text);
+  } catch (err) {
+    console.error("Failed to send daily subscriber digest:", err);
+  }
 }
 
 export default {

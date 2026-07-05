@@ -102,6 +102,18 @@ describe("fetch handler", () => {
       expect(response.status).toBe(200);
       expect(telegramSends(fn).some((s) => s.chatId === 42 && s.text.includes("Welcome"))).toBe(true);
     });
+
+    it("returns 400 (not an unhandled exception) for malformed JSON", async () => {
+      const request = new Request("https://example.com/webhook/telegram", {
+        method: "POST",
+        headers: { "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+        body: "{not json",
+      });
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(request, testEnv());
+      await waitOnExecutionContext(ctx);
+      expect(response.status).toBe(400);
+    });
   });
 
   describe("POST /admin/locations", () => {
@@ -127,6 +139,32 @@ describe("fetch handler", () => {
       const response = await worker.fetch(request, testEnv());
       await waitOnExecutionContext(ctx);
       expect(response.status).toBe(400);
+    });
+
+    it("returns 400 (not an unhandled exception) for malformed JSON", async () => {
+      const request = new Request("https://example.com/admin/locations", {
+        method: "POST",
+        headers: { Authorization: "Bearer test-admin-token" },
+        body: "{not json",
+      });
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(request, testEnv());
+      await waitOnExecutionContext(ctx);
+      expect(response.status).toBe(400);
+    });
+
+    it("normalizes the slug to lowercase, matching the self-service /addlocation path", async () => {
+      const request = new Request("https://example.com/admin/locations", {
+        method: "POST",
+        headers: { Authorization: "Bearer test-admin-token" },
+        body: JSON.stringify({ slug: "Mixed-Case-CO", name: "Mixed Case, CO", sensorIndex: 888 }),
+      });
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(request, testEnv());
+      await waitOnExecutionContext(ctx);
+
+      expect(response.status).toBe(201);
+      expect(await getLocationBySlug(env.DB, "mixed-case-co")).not.toBeNull();
     });
 
     it("creates a location with no owner when authorized", async () => {
