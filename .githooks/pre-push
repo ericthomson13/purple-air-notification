@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Gatekeeper for `git push`, since there's no CI budget for this project -
+# this is the substitute for a GitHub Actions check. Installed automatically
+# via `npm install` (see scripts/install-git-hooks.sh, wired as the
+# `prepare` npm lifecycle hook).
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+echo "pre-push: typecheck + tests"
+npm run typecheck
+npm test

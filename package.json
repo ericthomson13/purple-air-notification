@@ -4,21 +4,26 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "prepare": "bash scripts/install-git-hooks.sh",
     "dev": "wrangler dev",
     "secrets:sync": "bash scripts/sync-secrets.sh",
     "deploy": "bash scripts/sync-secrets.sh && wrangler deploy",
     "postdeploy": "bash scripts/notify-deploy.sh",
     "webhook:set": "bash scripts/set-webhook.sh",
     "webhook:status": "bash scripts/webhook-status.sh",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "db:create": "wrangler d1 create purple-air-notification",
     "db:migrate:local": "wrangler d1 execute purple-air-notification --local --file=./schema.sql",
     "db:migrate:remote": "wrangler d1 execute purple-air-notification --remote --file=./schema.sql",
     "tail": "wrangler tail"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.0",
     "@cloudflare/workers-types": "^4.20250101.0",
     "typescript": "^5.6.0",
+    "vitest": "^4.1.9",
     "wrangler": "^4.0.0"
   }
 }

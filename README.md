@@ -282,6 +282,34 @@ convention), not `.env`. `.env` is only consumed by `scripts/sync-secrets.sh`
 to push real secrets to your deployed Worker. If you want the same values
 available locally, copy them into a `.dev.vars` file too (also gitignored).
 
+## Testing
+
+```bash
+npm test          # run once
+npm run test:watch
+```
+
+Tests run inside the actual Workers runtime via
+[`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/)
+— not mocks of it — including a real (ephemeral, in-memory) D1 database per
+test run, schema applied from `schema.sql` directly (`test/apply-schema.ts`,
+run automatically as a Vitest setup file — no separate migrations directory
+to keep in sync). External calls (PurpleAir, Telegram, Nominatim) are mocked
+per test via `vi.stubGlobal("fetch", ...)`.
+
+Coverage includes the full bot command surface (`/subscribe`, `/addlocation`
+in both auto-discovery and manual modes, `/removelocation` ownership
+enforcement, `/unsubscribe` scoping, the 40/50-subscriber safety net) and,
+notably, `pollLocations` actually firing a threshold-crossing alert end to
+end — the one thing that's hardest to observe manually, since it only
+happens when a location's real AQI crosses a level.
+
+There's no CI budget for this project, so tests are enforced locally
+instead: `npm install` runs `scripts/install-git-hooks.sh` (the `prepare`
+lifecycle hook), which points git at the tracked `.githooks/` directory.
+`.githooks/pre-push` then runs `npm run typecheck && npm test` before every
+`git push` — a failing test blocks the push.
+
 ## Versioning & deploy notifications
 
 The project uses plain [semver](https://semver.org/) via npm's built-in
@@ -309,15 +337,21 @@ deploy succeeds (wired as the `postdeploy` npm lifecycle hook — see
 src/
   index.ts      Worker entry point: HTTP routes + scheduled() cron handler
   purpleair.ts  PurpleAir API fetch + EPA correction + AQI calculation
+  geocode.ts    OpenStreetMap Nominatim city/state -> lat/lon lookup
   aqi.ts        AQI breakpoints, alert levels, colors
   telegram.ts   Telegram API calls + message formatting
   commands.ts   Telegram bot command handling (/start, /subscribe, etc.)
   db.ts         D1 query helpers
+test/           Vitest suite - see "Testing" above
+  apply-schema.ts  Applies schema.sql to the test D1 binding (Vitest setup file)
+  fixtures.ts      Shared LocationRow test fixture builder
 scripts/
-  sync-secrets.sh    Pushes missing secrets from .env to Cloudflare before deploy
-  set-webhook.sh     Registers the Worker's URL with Telegram's setWebhook API
-  webhook-status.sh  Prints Telegram's current webhook registration (getWebhookInfo)
-  notify-deploy.sh   DMs ADMIN_CHAT_ID with the deployed version (postdeploy hook)
+  sync-secrets.sh      Pushes missing secrets from .env to Cloudflare before deploy
+  set-webhook.sh       Registers the Worker's URL with Telegram's setWebhook API
+  webhook-status.sh    Prints Telegram's current webhook registration (getWebhookInfo)
+  notify-deploy.sh     DMs ADMIN_CHAT_ID with the deployed version (postdeploy hook)
+  install-git-hooks.sh Points git at .githooks/ (runs via the `prepare` npm hook)
+.githooks/pre-push  Runs typecheck + tests before every push (no CI budget)
 schema.sql      D1 table definitions (locations, subscriptions, readings_history)
 wrangler.jsonc  Worker + cron trigger + D1 binding config
 .env.example    Template for secrets + WORKER_URL (copy to .env, gitignored)
