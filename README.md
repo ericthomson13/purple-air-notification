@@ -239,7 +239,11 @@ wrangler.jsonc  Worker + cron trigger + D1 binding config
 - [x] Self-service subscribe/unsubscribe via Telegram bot commands
 - [ ] Let a user type a place name (`/subscribe "Boulder, CO"`) and have the
       bot geocode it and auto-discover the nearest PurpleAir sensor, instead
-      of requiring an admin to register locations by hand
+      of requiring an admin to register locations by hand. Until this
+      exists, an unrecognized slug just gets pointed back to `/locations` —
+      there's no capture mechanism yet for "I want a location that isn't
+      registered," so tracking that demand is manual (ask people directly,
+      or watch for repeated `/subscribe` attempts on unknown slugs in logs)
 - [ ] Per-user configurable thresholds (not everyone wants alerts at all five levels)
 - [ ] Multi-sensor averaging per location (reduce reliance on a single sensor going offline/miscalibrated)
 - [ ] Web dashboard for browsing historical AQI per location
