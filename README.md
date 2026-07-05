@@ -93,18 +93,29 @@ npm run db:migrate:remote
 
 ### 5. Set secrets and deploy
 
-Run these in your own terminal (not through an AI assistant or shared
-session) — each prompts for the value and stores it encrypted on Cloudflare,
-never in `wrangler.jsonc` or git:
+Copy `.env.example` to `.env` and fill in the four values from the table
+above. `.env` is gitignored — it never gets committed or leaves your
+machine. Run this in your own terminal (not through an AI assistant or
+shared session):
 
 ```bash
-npx wrangler secret put PURPLEAIR_API_KEY
-npx wrangler secret put TELEGRAM_BOT_TOKEN
-npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
-npx wrangler secret put ADMIN_TOKEN
+cp .env.example .env
+# edit .env with real values
 
 npm run deploy
 ```
+
+`npm run deploy` runs `scripts/sync-secrets.sh` first, which checks each
+required secret against what's already set on your Worker (via
+`wrangler secret list`) and pushes any that are missing, straight from
+`.env` — so you never have to run `wrangler secret put` by hand unless you
+want to. Secrets that are already set on Cloudflare are left alone (the
+script can't read their values back, only their names, so it won't
+overwrite something you set another way). If a required secret is missing
+both on Cloudflare and in `.env`, `deploy` stops before touching the Worker
+and tells you which ones to fill in.
+
+To sync secrets without deploying: `npm run secrets:sync`.
 
 Note the `*.workers.dev` URL wrangler prints (or your custom domain).
 
@@ -183,6 +194,11 @@ npm run typecheck
 Local dev won't receive real Telegram webhooks unless you tunnel it (e.g.
 `cloudflared tunnel`) and point `setWebhook` at the tunnel URL temporarily.
 
+Note: `wrangler dev` reads local secrets from `.dev.vars` (Wrangler's own
+convention), not `.env`. `.env` is only consumed by `scripts/sync-secrets.sh`
+to push real secrets to your deployed Worker. If you want the same values
+available locally, copy them into a `.dev.vars` file too (also gitignored).
+
 ## Project structure
 
 ```
@@ -193,8 +209,11 @@ src/
   telegram.ts   Telegram API calls + message formatting
   commands.ts   Telegram bot command handling (/start, /subscribe, etc.)
   db.ts         D1 query helpers
+scripts/
+  sync-secrets.sh  Pushes missing secrets from .env to Cloudflare before deploy
 schema.sql      D1 table definitions (locations, subscriptions)
 wrangler.jsonc  Worker + cron trigger + D1 binding config
+.env.example    Template for the four secrets (copy to .env, gitignored)
 ```
 
 ## Roadmap

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "secrets:sync": "bash scripts/sync-secrets.sh",
+    "deploy": "bash scripts/sync-secrets.sh && wrangler deploy",
     "typecheck": "tsc --noEmit",
     "db:create": "wrangler d1 create purple-air-notification",
     "db:migrate:local": "wrangler d1 execute purple-air-notification --local --file=./schema.sql",
