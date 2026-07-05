@@ -29,6 +29,13 @@ export const AQI_LEVELS: AqiLevel[] = [
 
 export const AQI_HEALTH_INFO_URL = "https://www.airnow.gov/aqi/aqi-basics/";
 
+// PurpleAir's own map defaults to showing AQI from raw, uncorrected PM2.5,
+// which is well documented to overestimate true air quality - especially in
+// dry, high-altitude conditions (exactly where we've seen ~20pt gaps from
+// what this bot reports). Shown next to every AQI value so that gap doesn't
+// read as a bug when someone compares against PurpleAir's site directly.
+export const AQI_CORRECTION_NOTE = "EPA-corrected";
+
 // Once AQI hits 100+ it's worth a direct pointer to what that means, not
 // just in the threshold-crossing alert.
 export function dangerZoneNote(aqi: number): string {

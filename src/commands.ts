@@ -1,4 +1,4 @@
-import { AQI_LEVELS, dangerZoneNote, levelIndexForAqi } from "./aqi";
+import { AQI_CORRECTION_NOTE, AQI_LEVELS, dangerZoneNote, levelIndexForAqi } from "./aqi";
 import {
   addLocation,
   addSubscription,
@@ -52,7 +52,8 @@ const WELCOME =
   "/addlocation &lt;slug&gt; - add a new location (e.g. boulder-co) and subscribe to it\n" +
   "/removelocation &lt;slug&gt; - remove a location you added (only the adder can)\n" +
   "/unsubscribe &lt;slug&gt; - stop alerts for a location\n" +
-  "/status - show your subscriptions and their current AQI";
+  "/status - show your subscriptions and their current AQI\n\n" +
+  `AQI values are ${AQI_CORRECTION_NOTE} (using the EPA/PurpleAir correction for known PM2.5 overestimation) - they may read lower than PurpleAir's own map, which shows raw, uncorrected values by default.`;
 
 // "salt-lake-city-ut" -> { city: "Salt Lake City", state: "UT" }. Only ever
 // called on slugs that already passed SLUG_PATTERN.
@@ -112,7 +113,7 @@ async function subscribeAndDescribeAqi(env: Env, chatId: number, location: Locat
     const swapNote = swappedTo
       ? ` (Note: ${location.name}'s old PurpleAir sensor was reporting inconsistent data, so we've switched it to a nearby one: "${swappedTo.name}".)`
       : "";
-    return `Current AQI for ${location.name} is ${aqi}${formatPastNote(past)} (${level.emoji} ${level.name}).${dangerZoneNote(aqi)}${swapNote}`;
+    return `Current AQI for ${location.name} is ${aqi} ${level.emoji} ${level.name}${formatPastNote(past)}.${dangerZoneNote(aqi)} (${AQI_CORRECTION_NOTE})${swapNote}`;
   } catch (err) {
     console.error(`Failed to fetch current reading for ${location.slug}:`, err);
     if (err instanceof SensorDivergenceError) {
@@ -299,7 +300,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
       await sendTelegramMessage(
         env.TELEGRAM_BOT_TOKEN,
         chatId,
-        `Added ${newLocation.name} (${slug})${sensorNote} and subscribed you. Current AQI is ${reading.aqi} (${level.emoji} ${level.name}).${dangerZoneNote(reading.aqi)}\n\nYou'll be notified when it crosses 50/100/150/200/300.${shareLine(env)}`,
+        `Added ${newLocation.name} (${slug})${sensorNote} and subscribed you. Current AQI is ${reading.aqi} ${level.emoji} ${level.name}.${dangerZoneNote(reading.aqi)} (${AQI_CORRECTION_NOTE})\n\nYou'll be notified when it crosses 50/100/150/200/300.${shareLine(env)}`,
       );
       break;
     }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AQI_CORRECTION_NOTE } from "../src/aqi";
 import { formatAlert, formatLocationsList, formatPastNote, formatStatus } from "../src/telegram";
 import { makeLocation } from "./fixtures";
 
@@ -34,6 +35,16 @@ describe("formatAlert", () => {
     expect(text).toContain("100");
     expect(text).toContain("was 150");
   });
+
+  // Regression coverage: every message reporting an AQI value should carry
+  // the correction-methodology note, as the last thing in the message - a
+  // ~20pt gap from PurpleAir's own (uncorrected) map display was mistaken
+  // for a bug without it.
+  it("includes the correction note, after everything else", () => {
+    const text = formatAlert(location, 105, 1, 2, null);
+    expect(text).toContain(`(${AQI_CORRECTION_NOTE})`);
+    expect(text.trimEnd().endsWith(`(${AQI_CORRECTION_NOTE})`)).toBe(true);
+  });
 });
 
 describe("formatStatus", () => {
@@ -51,6 +62,12 @@ describe("formatStatus", () => {
   it("omits the danger-zone link when AQI is under 100", () => {
     const text = formatStatus(makeLocation({ last_aqi: 42, last_level: 0, last_checked_at: "2026-01-01 00:00:00" }));
     expect(text).not.toContain("http");
+  });
+
+  it("includes the correction note, after the danger-zone link", () => {
+    const text = formatStatus(makeLocation({ last_aqi: 120, last_level: 2, last_checked_at: "2026-01-01 00:00:00" }));
+    expect(text).toContain(`(${AQI_CORRECTION_NOTE})`);
+    expect(text.indexOf("http")).toBeLessThan(text.indexOf(AQI_CORRECTION_NOTE));
   });
 });
 

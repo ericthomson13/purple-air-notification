@@ -1,4 +1,4 @@
-import { AQI_HEALTH_INFO_URL, AQI_LEVELS, dangerZoneNote, levelForAqi } from "./aqi";
+import { AQI_CORRECTION_NOTE, AQI_HEALTH_INFO_URL, AQI_LEVELS, dangerZoneNote, levelForAqi } from "./aqi";
 import type { LocationRow, PastReading } from "./types";
 
 export interface TelegramUpdate {
@@ -46,7 +46,7 @@ export function formatAlert(
   return (
     `${level.emoji} <b>${location.name}</b> AQI has ${direction} <b>${crossedThreshold}</b> — now <b>${aqi}</b>${formatPastNote(past)}\n` +
     `Category: <b>${level.name}</b>\n\n` +
-    `What this means for you: ${AQI_HEALTH_INFO_URL}`
+    `What this means for you: ${AQI_HEALTH_INFO_URL}\n\n(${AQI_CORRECTION_NOTE})`
   );
 }
 
@@ -55,7 +55,7 @@ export function formatStatus(location: LocationRow, past?: PastReading | null, s
     return `${location.name}: no reading yet.`;
   }
   const level = levelForAqi(location.last_aqi);
-  return `${level.emoji} <b>${location.name}</b>: AQI ${location.last_aqi}${formatPastNote(past)} (${level.name})${swapNote ?? ""}\nLast checked: ${location.last_checked_at ?? "unknown"}${dangerZoneNote(location.last_aqi)}`;
+  return `${level.emoji} <b>${location.name}</b>: AQI ${location.last_aqi}${formatPastNote(past)} (${level.name})${swapNote ?? ""}\nLast checked: ${location.last_checked_at ?? "unknown"}${dangerZoneNote(location.last_aqi)}\n(${AQI_CORRECTION_NOTE})`;
 }
 
 export function formatLocationsList(locations: LocationRow[]): string {
