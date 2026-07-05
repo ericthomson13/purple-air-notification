@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "purple-air-notification",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "purple-air-notification",
+      "database_id": "REPLACE_WITH_YOUR_DATABASE_ID"
+    }
+  ]
+}
