@@ -4,15 +4,15 @@ import { addLocation, addSubscription, getLocationBySlug } from "../src/db";
 import worker, { pollLocations } from "../src/index";
 import type { Env } from "../src/types";
 
-function sensorResponse(pm25: number) {
+function sensorResponse(pm25: number, humidity = 40, temperature = 20) {
   return new Response(
     JSON.stringify({
       sensor: {
         name: "Mock Sensor",
         "pm2.5_cf_1_a": pm25,
         "pm2.5_cf_1_b": pm25,
-        humidity: 40,
-        temperature: 20,
+        humidity,
+        temperature,
         last_seen: Math.floor(Date.now() / 1000) - 60,
       },
     }),
@@ -204,6 +204,67 @@ describe("pollLocations", () => {
     await pollLocations(testEnv());
 
     expect(telegramSends(fn)).toHaveLength(0);
+  });
+
+  // Raw PM2.5 inputs (humidity=0, temperature=0) that land exactly on AQI
+  // 99/100/101 - the values from test/aqi.test.ts's boundary table. Confirms
+  // pollLocations fires (or correctly doesn't) at the precise edge of a
+  // threshold, not just for an arbitrary jump into a different range.
+  const PM25_FOR_AQI_99 = 57.23;
+  const PM25_FOR_AQI_100 = 58.23;
+  const PM25_FOR_AQI_101 = 58.72;
+
+  it("fires when AQI drops from 101 to 99, crossing down through the 100 threshold", async () => {
+    const location = await makeLocation("poll-boundary-101-99-co", 101, 2); // 2 = Unhealthy for Sensitive Groups
+    await addSubscription(env.DB, 601, location.id);
+    const fn = vi.fn().mockImplementation(async () => sensorResponse(PM25_FOR_AQI_99, 0, 0));
+    vi.stubGlobal("fetch", fn);
+
+    await pollLocations(testEnv());
+
+    const sends = telegramSends(fn);
+    expect(sends).toHaveLength(1);
+    expect(sends[0].text).toContain("dropped below <b>100</b>");
+    expect((await getLocationBySlug(env.DB, "poll-boundary-101-99-co"))?.last_aqi).toBe(99);
+  });
+
+  it("fires when AQI drops from 101 to exactly 100, crossing down through the 100 threshold", async () => {
+    const location = await makeLocation("poll-boundary-101-100-co", 101, 2);
+    await addSubscription(env.DB, 602, location.id);
+    const fn = vi.fn().mockImplementation(async () => sensorResponse(PM25_FOR_AQI_100, 0, 0));
+    vi.stubGlobal("fetch", fn);
+
+    await pollLocations(testEnv());
+
+    const sends = telegramSends(fn);
+    expect(sends).toHaveLength(1);
+    expect(sends[0].text).toContain("dropped below <b>100</b>");
+    expect((await getLocationBySlug(env.DB, "poll-boundary-101-100-co"))?.last_aqi).toBe(100);
+  });
+
+  it("fires when AQI rises from 100 to 101, crossing up through the 100 threshold", async () => {
+    const location = await makeLocation("poll-boundary-100-101-co", 100, 1); // 1 = Moderate
+    await addSubscription(env.DB, 603, location.id);
+    const fn = vi.fn().mockImplementation(async () => sensorResponse(PM25_FOR_AQI_101, 0, 0));
+    vi.stubGlobal("fetch", fn);
+
+    await pollLocations(testEnv());
+
+    const sends = telegramSends(fn);
+    expect(sends).toHaveLength(1);
+    expect(sends[0].text).toContain("risen above <b>100</b>");
+  });
+
+  it("does not fire moving from 99 to 100 - both are still Moderate", async () => {
+    const location = await makeLocation("poll-boundary-99-100-co", 99, 1);
+    await addSubscription(env.DB, 604, location.id);
+    const fn = vi.fn().mockImplementation(async () => sensorResponse(PM25_FOR_AQI_100, 0, 0));
+    vi.stubGlobal("fetch", fn);
+
+    await pollLocations(testEnv());
+
+    expect(telegramSends(fn)).toHaveLength(0);
+    expect((await getLocationBySlug(env.DB, "poll-boundary-99-100-co"))?.last_aqi).toBe(100);
   });
 
   it("keeps polling other locations if one location's fetch fails", async () => {

@@ -59,6 +59,43 @@ describe("levelForAqi / levelIndexForAqi", () => {
   });
 });
 
+describe("calcAqi at exact threshold boundaries", () => {
+  // Raw PM2.5 (humidity=0, temperature=0 to make the correction formula
+  // easy to solve exactly) that produce each AQI value straddling every
+  // alert threshold. Confirms the real correction+breakpoint pipeline - not
+  // just levelForAqi's lookup table in isolation - lands on the exact
+  // boundary and classifies each side into the correct level.
+  it.each([
+    [9.42, 49, "Good"],
+    [9.76, 50, "Good"],
+    [9.92, 51, "Moderate"],
+    [57.23, 99, "Moderate"],
+    [58.23, 100, "Moderate"],
+    [58.72, 101, "Unhealthy for Sensitive Groups"],
+    [94.56, 149, "Unhealthy for Sensitive Groups"],
+    [95.32, 150, "Unhealthy for Sensitive Groups"],
+    [95.69, 151, "Unhealthy"],
+    [221.13, 199, "Unhealthy"],
+    [223.76, 200, "Unhealthy"],
+    [225.08, 201, "Very Unhealthy"],
+    [365.89, 299, "Very Unhealthy"],
+    [367.24, 300, "Very Unhealthy"],
+    [367.91, 301, "Hazardous"],
+  ])("raw PM2.5 %f -> AQI %i -> %s", (pm25, expectedAqi, expectedLevel) => {
+    const aqi = calcAqi(pm25, 0, 0);
+    expect(aqi).toBe(expectedAqi);
+    expect(levelForAqi(aqi).name).toBe(expectedLevel);
+  });
+
+  it("99 and 100 are the same level (Moderate) - no crossing between them", () => {
+    expect(levelIndexForAqi(calcAqi(57.23, 0, 0))).toBe(levelIndexForAqi(calcAqi(58.23, 0, 0)));
+  });
+
+  it("100 and 101 are different levels - this is where a crossing alert must fire", () => {
+    expect(levelIndexForAqi(calcAqi(58.23, 0, 0))).not.toBe(levelIndexForAqi(calcAqi(58.72, 0, 0)));
+  });
+});
+
 describe("dangerZoneNote", () => {
   it("is empty below 100", () => {
     expect(dangerZoneNote(99)).toBe("");
