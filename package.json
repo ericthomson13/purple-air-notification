@@ -7,6 +7,8 @@
     "dev": "wrangler dev",
     "secrets:sync": "bash scripts/sync-secrets.sh",
     "deploy": "bash scripts/sync-secrets.sh && wrangler deploy",
+    "webhook:set": "bash scripts/set-webhook.sh",
+    "webhook:status": "bash scripts/webhook-status.sh",
     "typecheck": "tsc --noEmit",
     "db:create": "wrangler d1 create purple-air-notification",
     "db:migrate:local": "wrangler d1 execute purple-air-notification --local --file=./schema.sql",

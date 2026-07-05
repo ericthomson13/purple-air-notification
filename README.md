@@ -132,6 +132,17 @@ Note the `*.workers.dev` URL wrangler prints (or your custom domain).
 
 ### 6. Point Telegram's webhook at your Worker
 
+Add `WORKER_URL` (the `*.workers.dev` URL from step 5) to your `.env`, then:
+
+```bash
+npm run webhook:set      # registers the webhook with Telegram
+npm run webhook:status   # confirms Telegram sees it - "url" should match WORKER_URL
+```
+
+Both read `TELEGRAM_BOT_TOKEN` / `TELEGRAM_WEBHOOK_SECRET` / `WORKER_URL`
+from `.env`, so there's nothing to copy-paste by hand. If you'd rather do it
+manually:
+
 ```bash
 curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   -d "url=https://<your-worker>.workers.dev/webhook/telegram" \
@@ -230,10 +241,12 @@ src/
   commands.ts   Telegram bot command handling (/start, /subscribe, etc.)
   db.ts         D1 query helpers
 scripts/
-  sync-secrets.sh  Pushes missing secrets from .env to Cloudflare before deploy
-schema.sql      D1 table definitions (locations, subscriptions)
+  sync-secrets.sh    Pushes missing secrets from .env to Cloudflare before deploy
+  set-webhook.sh     Registers the Worker's URL with Telegram's setWebhook API
+  webhook-status.sh  Prints Telegram's current webhook registration (getWebhookInfo)
+schema.sql      D1 table definitions (locations, subscriptions, readings_history)
 wrangler.jsonc  Worker + cron trigger + D1 binding config
-.env.example    Template for the four secrets (copy to .env, gitignored)
+.env.example    Template for secrets + WORKER_URL (copy to .env, gitignored)
 ```
 
 ## Roadmap
