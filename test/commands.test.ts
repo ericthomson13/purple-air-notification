@@ -159,6 +159,23 @@ describe("/start and unknown commands", () => {
     await handleTelegramUpdate(updateFor(1, "/whatever"), testEnv());
     expect(telegramMessagesTo(fn, 1)[0]).toContain("Welcome");
   });
+
+  // /start is often someone's very first message to the bot, so the docs
+  // link needs to be a real tappable link there, not just a mention of the
+  // /documentation command name.
+  it("/start includes a tappable documentation link when configured", async () => {
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(1, "/start"), testEnv({ DOCUMENTATION_URL: "https://docs.example.com" }));
+    expect(telegramMessagesTo(fn, 1)[0]).toContain('<a href="https://docs.example.com">');
+  });
+
+  it("/start omits the tappable link (but still mentions the command) when no doc URL is configured", async () => {
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(1, "/start"), testEnv());
+    const text = telegramMessagesTo(fn, 1)[0];
+    expect(text).not.toContain("<a href");
+    expect(text).toContain("/documentation");
+  });
 });
 
 describe("/subscribe", () => {
