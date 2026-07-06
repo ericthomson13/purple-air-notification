@@ -12,6 +12,9 @@ export interface Env {
   // heads-ups (currently: the subscriber safety-net warning) go here
   // instead of to whoever happened to add the location.
   ADMIN_CHAT_ID?: string;
+  // Optional: link to the public docs/methodology site (see docs/site/),
+  // returned by /documentation. Unset until the operator deploys that site.
+  DOCUMENTATION_URL?: string;
 }
 
 export interface LocationRow {

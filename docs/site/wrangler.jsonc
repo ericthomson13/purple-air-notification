@@ -1,0 +1,15 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // Separate Worker from the bot itself (see ../../wrangler.jsonc) - a plain
+  // static site with no server-side logic, no bindings, no secrets. Deployed
+  // independently so a docs change never touches the bot's deploy.
+  "name": "purple-air-notification-docs",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "404-page"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

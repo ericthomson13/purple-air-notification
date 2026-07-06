@@ -464,6 +464,20 @@ describe("/status", () => {
   });
 });
 
+describe("/documentation", () => {
+  it("links to the docs site when DOCUMENTATION_URL is configured", async () => {
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(700, "/documentation"), testEnv({ DOCUMENTATION_URL: "https://docs.example.com" }));
+    expect(telegramMessagesTo(fn, 700)[0]).toContain("https://docs.example.com");
+  });
+
+  it("says no link is configured when DOCUMENTATION_URL is unset", async () => {
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(701, "/documentation"), testEnv());
+    expect(telegramMessagesTo(fn, 701)[0]).toContain("No documentation link is configured");
+  });
+});
+
 describe("subscriber safety net", () => {
   it("DMs ADMIN_CHAT_ID (not the location owner) once subscriber count crosses 40", async () => {
     const location = await makeLocation("cmd-safety-net-co", 12345);

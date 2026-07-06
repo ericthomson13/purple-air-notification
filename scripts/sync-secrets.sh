@@ -9,7 +9,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 REQUIRED_VARS=(PURPLEAIR_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET ADMIN_TOKEN TELEGRAM_BOT_USERNAME)
 
 # Pushed if present in .env, but their absence never blocks deploy.
-OPTIONAL_VARS=(ADMIN_CHAT_ID)
+OPTIONAL_VARS=(ADMIN_CHAT_ID DOCUMENTATION_URL)
 
 if [[ -f .env ]]; then
   set -a

@@ -86,6 +86,7 @@ generate or fill in yourself:
 | `ADMIN_TOKEN` | **You generate this** too — protects the `/admin/locations` endpoint |
 | `TELEGRAM_BOT_USERNAME` | Your bot's `@username` (no `@`) from BotFather/its Telegram profile — not a secret in the security sense, but kept out of the public repo since it identifies the specific bot. Used to build the shareable `t.me/<username>` link in subscription confirmations |
 | `ADMIN_CHAT_ID` *(optional)* | Your own Telegram chat_id — message [@userinfobot](https://t.me/userinfobot) to get it. If set, you get DM'd when any location crosses 40 or 50 subscribers (see "Why this stack" below); if unset, that warning goes to whoever added the location instead |
+| `DOCUMENTATION_URL` *(optional)* | URL of the public docs/methodology site (see [docs/site/](./docs/site/) — a separate Worker, deployed independently via `cd docs/site && npx wrangler deploy`). Returned by `/documentation`; if unset, that command says no link is configured |
 
 ### 1. Prerequisites
 

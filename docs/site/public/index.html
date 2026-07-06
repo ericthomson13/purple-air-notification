@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PurpleAir AQI Notifier — About &amp; Methodology</title>
+<meta name="description" content="What this bot does, and why its AQI numbers are EPA-corrected and may differ from PurpleAir's own map." />
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-alt: #f4f6f8;
+    --text: #1b1f23;
+    --text-muted: #57606a;
+    --border: #d8dee4;
+    --accent: #2563eb;
+    --accent-soft: #eaf1fe;
+    --good: #00863f;
+    --moderate: #8a6d00;
+    --usg: #b35900;
+    --unhealthy: #c62828;
+    --very-unhealthy: #7b2d8e;
+    --hazardous: #7e0023;
+    --code-bg: #f0f2f5;
+    --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --bg-alt: #151b23;
+      --text: #e6edf3;
+      --text-muted: #9aa5b1;
+      --border: #2d333b;
+      --accent: #5b9dff;
+      --accent-soft: #132339;
+      --good: #3fb950;
+      --moderate: #d4a72c;
+      --usg: #e0883a;
+      --unhealthy: #f85149;
+      --very-unhealthy: #c297e0;
+      --hazardous: #ff9492;
+      --code-bg: #161b22;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 2.5rem 1.25rem 5rem;
+  }
+  header.hero {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 3rem 1.25rem 1.5rem;
+  }
+  h1 { font-size: 1.9rem; margin: 0 0 0.5rem; letter-spacing: -0.01em; }
+  h2 { font-size: 1.35rem; margin: 2.75rem 0 0.9rem; letter-spacing: -0.01em; }
+  h3 { font-size: 1.05rem; margin: 1.75rem 0 0.6rem; }
+  p { margin: 0.75rem 0; }
+  .tagline { color: var(--text-muted); font-size: 1.05rem; margin-top: 0; }
+  a { color: var(--accent); }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+  code { background: var(--code-bg); padding: 0.12em 0.4em; border-radius: 4px; }
+  .card {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem 1.4rem;
+    margin: 1.25rem 0;
+  }
+  .cta {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    text-decoration: none;
+    font-weight: 600;
+    padding: 0.7rem 1.3rem;
+    border-radius: 8px;
+    margin-top: 0.75rem;
+  }
+  .cta:hover { opacity: 0.92; }
+  nav.toc {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1rem;
+    font-size: 0.92rem;
+    padding: 0.9rem 1.1rem;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin: 1.5rem 0;
+  }
+  nav.toc a { text-decoration: none; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.94rem; }
+  th, td { text-align: left; padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-muted); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  .table-wrap { overflow-x: auto; }
+  .level-dot { display: inline-block; width: 0.7em; height: 0.7em; border-radius: 50%; margin-right: 0.45em; vertical-align: middle; }
+  .cite-list { list-style: none; padding: 0; margin: 1rem 0; }
+  .cite-list li {
+    padding: 0.7rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .cite-list li:last-child { border-bottom: none; }
+  .cite-list .src-title { font-weight: 600; display: block; }
+  .cite-list .src-desc { color: var(--text-muted); font-size: 0.92rem; }
+  .formula {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1.1rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9rem;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  /* chart */
+  .chart-card { padding: 1.4rem 1.4rem 1.1rem; }
+  .controls { display: flex; flex-wrap: wrap; gap: 1.5rem; margin-bottom: 0.75rem; }
+  .control { flex: 1 1 200px; }
+  .control label { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+  .control output { font-weight: 600; color: var(--text); }
+  .control input[type="range"] { width: 100%; }
+  .presets { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .presets button {
+    font: inherit;
+    font-size: 0.82rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 0.35rem 0.85rem;
+    cursor: pointer;
+  }
+  .presets button:hover { border-color: var(--accent); color: var(--accent); }
+  svg#chart { width: 100%; height: auto; overflow: visible; }
+  .legend { display: flex; gap: 1.5rem; font-size: 0.85rem; margin-top: 0.5rem; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 0.4em; }
+  .swatch { width: 1.3em; height: 3px; border-radius: 2px; display: inline-block; }
+  .readout { display: flex; gap: 2rem; flex-wrap: wrap; margin-top: 1rem; font-size: 0.92rem; }
+  .readout .figure { font-size: 1.5rem; font-weight: 700; }
+  .readout .label { color: var(--text-muted); font-size: 0.82rem; }
+  .gap-callout {
+    display: inline-block;
+    margin-top: 0.6rem;
+    padding: 0.35rem 0.7rem;
+    border-radius: 6px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 0.88rem;
+  }
+
+  footer {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 3rem;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    border-top: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>🟢 PurpleAir AQI Notifier</h1>
+  <p class="tagline">Free Telegram alerts the moment air quality crosses a threshold that matters — powered by community PurpleAir sensors, corrected the way the EPA recommends.</p>
+  <a class="cta" href="https://t.me/aqi_et_notifier_bot" target="_blank" rel="noopener">Open the bot on Telegram →</a>
+</header>
+
+<main>
+
+<nav class="toc" aria-label="On this page">
+  <a href="#what-it-does">What it does</a>
+  <a href="#methodology">Why the numbers may differ from PurpleAir</a>
+  <a href="#levels">AQI levels</a>
+  <a href="#sensor-health">Sensor health checks</a>
+  <a href="#sources">Sources</a>
+</nav>
+
+<h2 id="what-it-does">What it does</h2>
+<p>
+  This bot watches PurpleAir sensors for the locations people subscribe to and sends a Telegram
+  message the moment the air quality category changes — good → moderate, moderate → unhealthy,
+  and so on, in either direction. No app besides Telegram, no account, no cost.
+</p>
+<div class="card">
+  <p style="margin-top:0"><strong>Get started in under a minute:</strong></p>
+  <ol style="margin:0.5rem 0 0; padding-left:1.2rem;">
+    <li>Open <a href="https://t.me/aqi_et_notifier_bot" target="_blank" rel="noopener">the bot</a> and tap <strong>Start</strong>.</li>
+    <li>Send <code>/subscribe leadville-co</code> — Leadville, CO ships out of the box.</li>
+    <li>Want a different town? <code>/addlocation boulder-co</code> finds the nearest active sensor automatically.</li>
+  </ol>
+</div>
+<p>
+  You can subscribe to more than one location, check <code>/status</code> any time, and
+  <code>/unsubscribe</code> whenever you want. Full walkthrough (including how to point it at a
+  specific sensor by hand) is in the
+  <a href="https://github.com/ericthomson13/purple-air-notification/blob/main/docs/user-guide.md" target="_blank" rel="noopener">user guide</a>.
+</p>
+
+<h2 id="methodology">Why the numbers may differ from PurpleAir's own map</h2>
+<p>
+  If you check a sensor on <a href="https://map.purpleair.com/" target="_blank" rel="noopener">PurpleAir's map</a>
+  and compare it to what this bot reports, don't be surprised if the numbers don't match — often by
+  a meaningful margin. That's expected, not a bug. Here's why.
+</p>
+<p>
+  PurpleAir sensors are low-cost laser particle counters. They're great at detecting <em>relative</em>
+  change in real time, but on their own they systematically <strong>overestimate</strong> true PM2.5
+  concentration compared to EPA reference-grade monitors — and the size of that overestimation gets
+  worse in dry air and at high altitude, which describes plenty of the mountain towns this bot was
+  built for. PurpleAir's own map, by default, shows AQI computed straight from the raw sensor reading,
+  with no adjustment for this known bias.
+</p>
+<p>
+  This bot instead applies the correction formula published by
+  <a href="https://amt.copernicus.org/articles/14/4617/2021/" target="_blank" rel="noopener">Barkjohn, Norris &amp; Clements (2021)</a>
+  — developed specifically for PurpleAir sensors, using co-located reference monitors, and the
+  correction the <a href="https://www.epa.gov/" target="_blank" rel="noopener">US EPA</a> itself
+  recommends and uses on its AirNow Fire and Smoke Map. In plain terms: it takes the average of the
+  sensor's two PM2.5 channels plus the local humidity and temperature, and produces a value closer to
+  what a reference-grade monitor would read at that spot.
+</p>
+
+<h3>The formula</h3>
+<div class="formula">// pm25 = average of the sensor's A/B channel readings (µg/m³)
+// rh   = relative humidity (%)     temp = temperature (°F)
+
+if (pm25 &lt; 343) {
+  corrected = 0.541 * pm25 - 0.0618 * rh + 0.00534 * temp + 3.634
+} else {
+  // separate high-concentration fit - relevant during heavy wildfire smoke
+  corrected = 0.46 * pm25 + 0.000393 * pm25^2 + 2.97
+}</div>
+<p>
+  That corrected PM2.5 value then goes through the
+  <a href="https://www.epa.gov/system/files/documents/2024-02/pm-naaqs-air-quality-index-fact-sheet.pdf" target="_blank" rel="noopener">2024-revised EPA breakpoint table</a>
+  (below) to get the final AQI this bot reports — which is why every AQI value it sends is labeled
+  <strong>(EPA-corrected)</strong>.
+</p>
+
+<h3>Try it yourself</h3>
+<p>
+  This chart plots the exact formula above: raw PurpleAir AQI (uncorrected) vs. the EPA-corrected AQI
+  this bot actually reports, across a range of PM2.5 readings. Drag the sliders — notice how the gap
+  between the two lines grows in drier air, which is exactly the mismatch people notice when comparing
+  this bot to PurpleAir's map in a place like Leadville, CO.
+</p>
+
+<div class="card chart-card">
+  <div class="presets">
+    <button type="button" data-rh="45" data-temp="70">Typical day (45% RH, 70°F)</button>
+    <button type="button" data-rh="11" data-temp="83">Leadville, CO right now (11% RH, 83°F)</button>
+    <button type="button" data-rh="80" data-temp="65">Humid day (80% RH, 65°F)</button>
+  </div>
+  <div class="controls">
+    <div class="control">
+      <label for="rh">Relative humidity <output id="rh-val">45%</output></label>
+      <input type="range" id="rh" min="0" max="100" value="45" />
+    </div>
+    <div class="control">
+      <label for="temp">Temperature <output id="temp-val">70°F</output></label>
+      <input type="range" id="temp" min="-20" max="110" value="70" />
+    </div>
+  </div>
+
+  <svg id="chart" viewBox="0 0 640 320" role="img" aria-labelledby="chart-title chart-desc">
+    <title id="chart-title">Raw vs. EPA-corrected AQI</title>
+    <desc id="chart-desc">Line chart comparing uncorrected PurpleAir AQI to EPA-corrected AQI as raw PM2.5 increases.</desc>
+  </svg>
+
+  <div class="legend">
+    <span><span class="swatch" style="background:#c62828"></span>Raw / uncorrected AQI (PurpleAir's default map display)</span>
+    <span><span class="swatch" style="background:#2563eb"></span>EPA-corrected AQI (what this bot reports)</span>
+  </div>
+
+  <div class="readout">
+    <div>
+      <div class="label">At 38 µg/m³ raw PM2.5 (Leadville's actual reading today)</div>
+      <div class="figure" id="readout-raw">—</div>
+    </div>
+    <div>
+      <div class="label">EPA-corrected</div>
+      <div class="figure" id="readout-corrected">—</div>
+    </div>
+  </div>
+  <div class="gap-callout" id="readout-gap"></div>
+</div>
+
+<h3>A real example: Leadville, CO</h3>
+<p>
+  We pulled live data on a dry summer afternoon from the sensor this bot uses in Leadville, plus three
+  others within a couple hundred meters of it (conditions varied slightly sensor to sensor, so each
+  row uses its own actual humidity/temperature reading):
+</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Sensor</th><th>Raw PM2.5 (µg/m³)</th><th>RH</th><th>Temp</th><th>Raw / uncorrected AQI</th><th>EPA-corrected AQI</th></tr></thead>
+  <tbody>
+    <tr><td>Sloan_flex-f877 (used by this bot)</td><td>38.0</td><td>11%</td><td>83°F</td><td>107</td><td>79</td></tr>
+    <tr><td>Sloan_flex-d54e</td><td>38.1</td><td>10%</td><td>85°F</td><td>107</td><td>79</td></tr>
+    <tr><td>East 4th</td><td>35.0</td><td>10%</td><td>80°F</td><td>99</td><td>76</td></tr>
+    <tr><td>Sloan_zen-2</td><td>33.8</td><td>12%</td><td>92°F</td><td>97</td><td>74</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  All four sensors agree closely with each other once corrected. The ~20-30 point gap between each
+  sensor's raw and corrected AQI isn't sensor disagreement — it's the same known overestimation bias,
+  showing up consistently across every nearby sensor, in exactly the dry/high-altitude conditions
+  where it's most pronounced.
+</p>
+
+<h2 id="levels">AQI levels this bot alerts on</h2>
+<p>You get a message any time a subscribed location crosses one of these boundaries, in either direction:</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Level</th><th>AQI range</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td><span class="level-dot" style="background:#00e400"></span>🟢 Good</td><td>0–50</td><td>Air quality is fine for everyone.</td></tr>
+    <tr><td><span class="level-dot" style="background:#ffff00"></span>🟡 Moderate</td><td>51–100</td><td>Fine for most people; take it easier outside if you have asthma or another breathing condition.</td></tr>
+    <tr><td><span class="level-dot" style="background:#ff7e00"></span>🟠 Unhealthy for Sensitive Groups</td><td>101–150</td><td>Kids, older adults, and anyone with heart or lung conditions should limit time outdoors.</td></tr>
+    <tr><td><span class="level-dot" style="background:#ff0000"></span>🔴 Unhealthy</td><td>151–200</td><td>Everyone may start to notice effects. Limit outdoor activity.</td></tr>
+    <tr><td><span class="level-dot" style="background:#8f3f97"></span>🟣 Very Unhealthy</td><td>201–300</td><td>Health alert — avoid outdoor activity if you can.</td></tr>
+    <tr><td><span class="level-dot" style="background:#7e0023"></span>🟤 Hazardous</td><td>301+</td><td>Emergency conditions — stay indoors.</td></tr>
+  </tbody>
+</table>
+</div>
+<p>More detail on any level: <a href="https://www.airnow.gov/aqi/aqi-basics/" target="_blank" rel="noopener">airnow.gov/aqi/aqi-basics</a></p>
+
+<h2 id="sensor-health">Sensor health checks</h2>
+<p>
+  PurpleAir sensors have two independent PM2.5 channels that normally agree closely. Occasionally one
+  channel fails (dust, insects, moisture) and reports wildly different numbers from the other — this
+  bot checks for that disagreement before trusting a reading. If it finds a diverging sensor, it
+  automatically looks for a nearby healthy sensor and switches the location to it, and lets subscribers
+  know when that happens. If no healthy sensor is nearby, it says so rather than silently reporting a
+  broken reading.
+</p>
+
+<h2 id="sources">Sources &amp; further reading</h2>
+<ul class="cite-list">
+  <li>
+    <span class="src-title"><a href="https://amt.copernicus.org/articles/14/4617/2021/" target="_blank" rel="noopener">Barkjohn, K. K., Gantt, B., &amp; Clements, A. L. (2021), Atmospheric Measurement Techniques 14, 4617–4637</a></span>
+    <span class="src-desc">The correction formula this bot uses, developed and validated against reference-grade monitors specifically for PurpleAir sensors.</span>
+  </li>
+  <li>
+    <span class="src-title"><a href="https://www.epa.gov/system/files/documents/2024-02/pm-naaqs-air-quality-index-fact-sheet.pdf" target="_blank" rel="noopener">US EPA — PM NAAQS AQI Fact Sheet (2024 revision)</a></span>
+    <span class="src-desc">The official AQI breakpoint table used to convert corrected PM2.5 into the 0–500 AQI scale.</span>
+  </li>
+  <li>
+    <span class="src-title"><a href="https://www.airnow.gov/aqi/aqi-basics/" target="_blank" rel="noopener">AirNow — AQI Basics</a></span>
+    <span class="src-desc">Plain-language explanation of what each AQI level means for your health.</span>
+  </li>
+  <li>
+    <span class="src-title"><a href="https://api.purpleair.com/" target="_blank" rel="noopener">PurpleAir API documentation</a></span>
+    <span class="src-desc">The sensor data source this bot polls every 10 minutes.</span>
+  </li>
+  <li>
+    <span class="src-title"><a href="https://map.purpleair.com/" target="_blank" rel="noopener">PurpleAir Map</a></span>
+    <span class="src-desc">Browse sensors directly, including the raw (uncorrected) readings this page compares against.</span>
+  </li>
+</ul>
+
+</main>
+
+<footer>
+  <p><a href="https://github.com/ericthomson13/purple-air-notification" target="_blank" rel="noopener">Source on GitHub</a> — this page and the bot's methodology are open for anyone to verify.</p>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  // Kept identical to correctPm25()/calcAqiFromPm25() in src/aqi.ts - if that
+  // formula changes, update it here too.
+  var BREAKPOINTS = [
+    [0.0, 9.0, 0, 50],
+    [9.1, 35.4, 51, 100],
+    [35.5, 55.4, 101, 150],
+    [55.5, 125.4, 151, 200],
+    [125.5, 225.4, 201, 300],
+    [225.5, 325.4, 301, 500],
+  ];
+
+  function aqiFromPm25(pm25) {
+    for (var i = 0; i < BREAKPOINTS.length; i++) {
+      var b = BREAKPOINTS[i];
+      if (pm25 <= b[1] || i === BREAKPOINTS.length - 1) {
+        return Math.round(((b[3] - b[2]) / (b[1] - b[0])) * (pm25 - b[0]) + b[2]);
+      }
+    }
+  }
+
+  function correctPm25(pm25, rh, temp) {
+    var corrected;
+    if (pm25 < 343) {
+      corrected = 0.541 * pm25 - 0.0618 * rh + 0.00534 * temp + 3.634;
+    } else {
+      corrected = 0.46 * pm25 + 3.93e-4 * pm25 * pm25 + 2.97;
+    }
+    return Math.max(0, corrected);
+  }
+
+  var rhInput = document.getElementById("rh");
+  var tempInput = document.getElementById("temp");
+  var rhVal = document.getElementById("rh-val");
+  var tempVal = document.getElementById("temp-val");
+  var svg = document.getElementById("chart");
+  var readoutRaw = document.getElementById("readout-raw");
+  var readoutCorrected = document.getElementById("readout-corrected");
+  var readoutGap = document.getElementById("readout-gap");
+
+  var W = 640, H = 320;
+  var PAD = { top: 16, right: 16, bottom: 34, left: 42 };
+  var MAX_PM25 = 120; // chart x-domain, µg/m3 raw
+  var MAX_AQI = 250; // chart y-domain
+
+  function x(pm25) {
+    return PAD.left + (pm25 / MAX_PM25) * (W - PAD.left - PAD.right);
+  }
+  function y(aqi) {
+    return H - PAD.bottom - (Math.min(aqi, MAX_AQI) / MAX_AQI) * (H - PAD.top - PAD.bottom);
+  }
+
+  function pathFor(fn) {
+    var pts = [];
+    for (var pm = 0; pm <= MAX_PM25; pm += 2) {
+      pts.push(x(pm) + "," + y(fn(pm)));
+    }
+    return "M" + pts.join(" L");
+  }
+
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  function isDark() {
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+
+  function render() {
+    var rh = Number(rhInput.value);
+    var temp = Number(tempInput.value);
+    rhVal.textContent = rh + "%";
+    tempVal.textContent = temp + "°F";
+
+    var gridColor = isDark() ? "#2d333b" : "#d8dee4";
+    var mutedColor = isDark() ? "#9aa5b1" : "#57606a";
+
+    // clear everything drawn by the previous render, leaving <title>/<desc> alone
+    svg.querySelectorAll("line, path, text, circle").forEach(function (el) { el.remove(); });
+
+    // gridlines + y labels
+    for (var aqi = 0; aqi <= MAX_AQI; aqi += 50) {
+      var gy = y(aqi);
+      svg.appendChild(svgEl("line", { x1: PAD.left, x2: W - PAD.right, y1: gy, y2: gy, stroke: gridColor, "stroke-width": 1 }));
+      var label = svgEl("text", { x: PAD.left - 8, y: gy + 4, "text-anchor": "end", fill: mutedColor, "font-size": 11 });
+      label.textContent = aqi;
+      svg.appendChild(label);
+    }
+    // x labels
+    for (var pm = 0; pm <= MAX_PM25; pm += 20) {
+      var lx = svgEl("text", { x: x(pm), y: H - PAD.bottom + 20, "text-anchor": "middle", fill: mutedColor, "font-size": 11 });
+      lx.textContent = pm;
+      svg.appendChild(lx);
+    }
+    var xAxisLabel = svgEl("text", { x: W / 2, y: H - 2, "text-anchor": "middle", fill: mutedColor, "font-size": 11 });
+    xAxisLabel.textContent = "Raw PM2.5 (µg/m³, average of channel A/B)";
+    svg.appendChild(xAxisLabel);
+
+    // raw line
+    svg.appendChild(svgEl("path", { d: pathFor(function (pm) { return aqiFromPm25(pm); }), fill: "none", stroke: "#c62828", "stroke-width": 2.5 }));
+    // corrected line
+    svg.appendChild(svgEl("path", { d: pathFor(function (pm) { return aqiFromPm25(correctPm25(pm, rh, temp)); }), fill: "none", stroke: "#2563eb", "stroke-width": 2.5 }));
+
+    // readout at 38 ug/m3 (Leadville's live reading)
+    var sample = 38;
+    var rawAqi = aqiFromPm25(sample);
+    var correctedAqi = aqiFromPm25(correctPm25(sample, rh, temp));
+    readoutRaw.textContent = rawAqi;
+    readoutCorrected.textContent = correctedAqi;
+    readoutGap.textContent = Math.abs(rawAqi - correctedAqi) + "-point gap at these conditions";
+
+    // marker circles at the sample point
+    svg.appendChild(svgEl("circle", { cx: x(sample), cy: y(rawAqi), r: 4, fill: "#c62828" }));
+    svg.appendChild(svgEl("circle", { cx: x(sample), cy: y(correctedAqi), r: 4, fill: "#2563eb" }));
+  }
+
+  rhInput.addEventListener("input", render);
+  tempInput.addEventListener("input", render);
+  document.querySelectorAll(".presets button").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      rhInput.value = btn.dataset.rh;
+      tempInput.value = btn.dataset.temp;
+      render();
+    });
+  });
+  window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+
+  render();
+})();
+</script>
+
+</body>
+</html>

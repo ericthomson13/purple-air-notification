@@ -52,7 +52,8 @@ const WELCOME =
   "/addlocation &lt;slug&gt; - add a new location (e.g. boulder-co) and subscribe to it\n" +
   "/removelocation &lt;slug&gt; - remove a location you added (only the adder can)\n" +
   "/unsubscribe &lt;slug&gt; - stop alerts for a location\n" +
-  "/status - show your subscriptions and their current AQI\n\n" +
+  "/status - show your subscriptions and their current AQI\n" +
+  "/documentation - link to how this bot works and why its AQI numbers may differ from PurpleAir's map\n\n" +
   `AQI values are ${AQI_CORRECTION_NOTE} (using the EPA/PurpleAir correction for known PM2.5 overestimation) - they may read lower than PurpleAir's own map, which shows raw, uncorrected values by default.`;
 
 // "salt-lake-city-ut" -> { city: "Salt Lake City", state: "UT" }. Only ever
@@ -385,6 +386,14 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
         }),
       );
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, statuses.join("\n\n"));
+      break;
+    }
+
+    case "/documentation": {
+      const text = env.DOCUMENTATION_URL
+        ? `How this bot works, and why its AQI numbers are EPA-corrected: ${env.DOCUMENTATION_URL}`
+        : "No documentation link is configured for this bot yet.";
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, text);
       break;
     }
 
