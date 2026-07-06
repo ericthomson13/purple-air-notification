@@ -323,11 +323,19 @@ to keep in sync). External calls (PurpleAir, Telegram, Nominatim) are mocked
 per test via `vi.stubGlobal("fetch", ...)`.
 
 Coverage includes the full bot command surface (`/subscribe`, `/addlocation`
-in both auto-discovery and manual modes, `/removelocation` ownership
-enforcement, `/unsubscribe` scoping, the 40/50-subscriber safety net) and,
-notably, `pollLocations` actually firing a threshold-crossing alert end to
-end — the one thing that's hardest to observe manually, since it only
-happens when a location's real AQI crosses a level.
+in both auto-discovery and manual modes plus its error/race-condition
+branches, `/removelocation` ownership enforcement, `/unsubscribe` scoping,
+the 40/50-subscriber safety net) and, notably, `pollLocations` actually
+firing a threshold-crossing alert end to end — the one thing that's hardest
+to observe manually, since it only happens when a location's real AQI
+crosses a level.
+
+`npm test` also runs `npm run test:docs` — a separate, plain-node Vitest
+project (`docs/site/vitest.config.js`) for the docs site's interactive
+chart. That page has no build step and duplicates `src/aqi.ts`'s correction
+formula in `docs/site/public/aqi-math.js` rather than importing it, so
+`docs/site/aqi-math.test.js` checks it against the same exact-boundary
+values as `test/aqi.test.ts` to catch the two silently drifting apart.
 
 There's no CI budget for this project, so tests are enforced locally
 instead: `npm install` runs `scripts/install-git-hooks.sh` (the `prepare`

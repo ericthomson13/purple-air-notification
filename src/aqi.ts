@@ -39,7 +39,7 @@ export const AQI_CORRECTION_NOTE = "EPA-corrected";
 // Once AQI hits 100+ it's worth a direct pointer to what that means, not
 // just in the threshold-crossing alert.
 export function dangerZoneNote(aqi: number): string {
-  return aqi >= 100 ? `\nFind more details: ${AQI_HEALTH_INFO_URL}` : "";
+  return aqi >= 100 ? `\n<a href="${AQI_HEALTH_INFO_URL}">Find more details</a>` : "";
 }
 
 export function levelForAqi(aqi: number): AqiLevel {

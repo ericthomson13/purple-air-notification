@@ -105,4 +105,8 @@ describe("dangerZoneNote", () => {
     expect(dangerZoneNote(100)).toContain("http");
     expect(dangerZoneNote(150)).toContain("http");
   });
+
+  it("renders as a tappable link (HTML anchor), not a raw URL", () => {
+    expect(dangerZoneNote(100)).toContain('<a href="http');
+  });
 });

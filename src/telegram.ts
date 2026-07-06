@@ -46,7 +46,7 @@ export function formatAlert(
   return (
     `${level.emoji} <b>${location.name}</b> AQI has ${direction} <b>${crossedThreshold}</b> — now <b>${aqi}</b>${formatPastNote(past)}\n` +
     `Category: <b>${level.name}</b>\n\n` +
-    `What this means for you: ${AQI_HEALTH_INFO_URL}\n\n(${AQI_CORRECTION_NOTE})`
+    `<a href="${AQI_HEALTH_INFO_URL}">Click here to learn what that means for you</a>\n\n(${AQI_CORRECTION_NOTE})`
   );
 }
 

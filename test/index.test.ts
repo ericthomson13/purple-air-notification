@@ -114,6 +114,26 @@ describe("fetch handler", () => {
       await waitOnExecutionContext(ctx);
       expect(response.status).toBe(400);
     });
+
+    // Telegram sends more update types than just new messages (edited
+    // messages, callback queries, etc.) - handleTelegramUpdate only cares
+    // about message.text, so these should be silently accepted, not crash.
+    it("accepts non-message updates (e.g. edited_message) without sending anything", async () => {
+      const fn = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      vi.stubGlobal("fetch", fn);
+
+      const request = new Request("https://example.com/webhook/telegram", {
+        method: "POST",
+        headers: { "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+        body: JSON.stringify({ update_id: 2, edited_message: { chat: { id: 42 }, text: "/start" } }),
+      });
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(request, testEnv());
+      await waitOnExecutionContext(ctx);
+
+      expect(response.status).toBe(200);
+      expect(telegramSends(fn)).toHaveLength(0);
+    });
   });
 
   describe("POST /admin/locations", () => {

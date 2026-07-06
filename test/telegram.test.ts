@@ -36,6 +36,11 @@ describe("formatAlert", () => {
     expect(text).toContain("was 150");
   });
 
+  it("links 'what that means for you' as a tappable link, not a raw URL", () => {
+    const text = formatAlert(location, 105, 1, 2, null);
+    expect(text).toContain('<a href="https://www.airnow.gov/aqi/aqi-basics/">Click here to learn what that means for you</a>');
+  });
+
   // Regression coverage: every message reporting an AQI value should carry
   // the correction-methodology note, as the last thing in the message - a
   // ~20pt gap from PurpleAir's own (uncorrected) map display was mistaken

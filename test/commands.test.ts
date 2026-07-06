@@ -37,7 +37,7 @@ function nominatimResponse(found = true) {
 }
 
 interface MockFetchOverrides {
-  purpleAirSensor?: () => Response;
+  purpleAirSensor?: () => Response | Promise<Response>;
   purpleAirSensorsList?: () => Response;
   nominatim?: () => Response;
 }
@@ -175,6 +175,26 @@ describe("/start and unknown commands", () => {
     const text = telegramMessagesTo(fn, 1)[0];
     expect(text).not.toContain("<a href");
     expect(text).toContain("/documentation");
+  });
+});
+
+describe("/locations", () => {
+  it("says none are registered when the list is empty", async () => {
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(1, "/locations"), testEnv());
+    expect(telegramMessagesTo(fn, 1)[0]).toContain("No locations");
+  });
+
+  it("lists every registered location", async () => {
+    await makeLocation("cmd-locations-a-co");
+    await makeLocation("cmd-locations-b-co");
+    const { fn } = installMockFetch();
+
+    await handleTelegramUpdate(updateFor(2, "/locations"), testEnv());
+
+    const text = telegramMessagesTo(fn, 2)[0];
+    expect(text).toContain("cmd-locations-a-co");
+    expect(text).toContain("cmd-locations-b-co");
   });
 });
 
@@ -317,6 +337,22 @@ describe("/addlocation", () => {
     expect(await getLocationBySlug(env.DB, "cmd-empty-co")).toBeNull();
   });
 
+  it("auto-discovery: reports a transient failure when geocoding itself errors, without creating a location", async () => {
+    const { fn } = installMockFetch({ nominatim: () => new Response("rate limited", { status: 429 }) });
+    await handleTelegramUpdate(updateFor(17, "/addlocation cmd-geocode-fail-co"), testEnv());
+
+    expect(telegramMessagesTo(fn, 17)[0]).toContain("Couldn't look up");
+    expect(await getLocationBySlug(env.DB, "cmd-geocode-fail-co")).toBeNull();
+  });
+
+  it("auto-discovery: reports a transient failure when the PurpleAir sensor search errors, without creating a location", async () => {
+    const { fn } = installMockFetch({ purpleAirSensorsList: () => new Response("nope", { status: 500 }) });
+    await handleTelegramUpdate(updateFor(18, "/addlocation cmd-search-fail-co"), testEnv());
+
+    expect(telegramMessagesTo(fn, 18)[0]).toContain("couldn't search PurpleAir for sensors nearby");
+    expect(await getLocationBySlug(env.DB, "cmd-search-fail-co")).toBeNull();
+  });
+
   it("manual fallback: slug + sensor_index + name creates and subscribes without geocoding", async () => {
     const { fn } = installMockFetch();
     await handleTelegramUpdate(updateFor(13, "/addlocation cmd-manual-co 555 Manual, CO"), testEnv());
@@ -328,6 +364,54 @@ describe("/addlocation", () => {
     const location = await getLocationBySlug(env.DB, "cmd-manual-co");
     expect(location?.sensor_index).toBe(555);
     expect(location?.name).toBe("Manual, CO");
+  });
+
+  it("manual fallback: rejects a non-numeric sensor_index without creating a location", async () => {
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(19, "/addlocation cmd-bad-sensor-co notanumber Bad, CO"), testEnv());
+
+    expect(telegramMessagesTo(fn, 19)[0]).toContain("Usage");
+    expect(await getLocationBySlug(env.DB, "cmd-bad-sensor-co")).toBeNull();
+  });
+
+  it("manual fallback: rejects a missing name without creating a location", async () => {
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(20, "/addlocation cmd-noname-co 555"), testEnv());
+
+    expect(telegramMessagesTo(fn, 20)[0]).toContain("Usage");
+    expect(await getLocationBySlug(env.DB, "cmd-noname-co")).toBeNull();
+  });
+
+  it("manual fallback: reports when the given sensor can't be read from PurpleAir, without creating a location", async () => {
+    const { fn } = installMockFetch({ purpleAirSensor: () => new Response("nope", { status: 500 }) });
+    await handleTelegramUpdate(updateFor(21, "/addlocation cmd-offline-sensor-co 555 Offline, CO"), testEnv());
+
+    const text = telegramMessagesTo(fn, 21)[0];
+    expect(text).toContain("offline");
+    expect(text).not.toContain("disagree"); // a generic fetch failure, not sensor divergence
+    expect(await getLocationBySlug(env.DB, "cmd-offline-sensor-co")).toBeNull();
+  });
+
+  // Regression test for the insert's catch block: two requests can both pass
+  // the "does this slug exist" check before either one inserts. Simulated
+  // here by inserting the conflicting row mid-flight, from inside the mocked
+  // PurpleAir sensor fetch - which runs after the existing-slug check but
+  // before this handler's own insert.
+  it("reports a race-condition insert conflict instead of erroring, without duplicating the location", async () => {
+    const { fn } = installMockFetch({
+      purpleAirSensor: async () => {
+        await addLocation(env.DB, { slug: "cmd-race-co", name: "Raced, CO", sensorIndex: 42, lat: null, lon: null, addedByChatId: 777 });
+        return sensorResponse();
+      },
+    });
+
+    await handleTelegramUpdate(updateFor(22, "/addlocation cmd-race-co 555 Raced, CO"), testEnv());
+
+    expect(telegramMessagesTo(fn, 22)[0]).toContain("may have just been added by someone else");
+    // the concurrent insert survives untouched - no duplicate, no overwrite
+    const location = await getLocationBySlug(env.DB, "cmd-race-co");
+    expect(location?.added_by_chat_id).toBe(777);
+    expect(location?.sensor_index).toBe(42);
   });
 
   it("resubscribes instead of erroring when the slug already exists", async () => {
@@ -521,5 +605,22 @@ describe("subscriber safety net", () => {
     await handleTelegramUpdate(updateFor(88888, "/subscribe cmd-safety-net-fallback-co"), testEnv());
 
     expect(telegramMessagesTo(fn, 54321).some((t) => t.includes("40 subscribers"))).toBe(true);
+  });
+
+  // Distinct from the 40-subscriber warning above: at 50, Cloudflare's
+  // free-tier fan-out limit is actually reached (not just approaching), so
+  // the message wording changes to say so and to suggest upgrading.
+  it("warns that the hard cap (50) has actually been reached, with different wording than the 40 warning", async () => {
+    const location = await makeLocation("cmd-safety-net-hardcap-co", 13579);
+    for (let i = 0; i < 49; i++) {
+      await addSubscription(env.DB, 30_000 + i, location.id);
+    }
+    const { fn } = installMockFetch();
+
+    await handleTelegramUpdate(updateFor(77777, "/subscribe cmd-safety-net-hardcap-co"), testEnv({ ADMIN_CHAT_ID: "777" }));
+
+    const adminMessages = telegramMessagesTo(fn, 777);
+    expect(adminMessages.some((t) => t.includes("has reached 50 subscribers"))).toBe(true);
+    expect(adminMessages.some((t) => t.includes("Workers Paid"))).toBe(true);
   });
 });

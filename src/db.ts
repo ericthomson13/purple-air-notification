@@ -13,10 +13,6 @@ export function getLocationBySlug(db: D1Database, slug: string) {
   return db.prepare("SELECT * FROM locations WHERE slug = ?").bind(slug).first<LocationRow>();
 }
 
-export function getLocationById(db: D1Database, id: number) {
-  return db.prepare("SELECT * FROM locations WHERE id = ?").bind(id).first<LocationRow>();
-}
-
 export function addLocation(
   db: D1Database,
   location: {

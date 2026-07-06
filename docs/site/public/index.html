@@ -378,39 +378,13 @@ if (pm25 &lt; 343) {
   <p><a href="https://github.com/ericthomson13/purple-air-notification" target="_blank" rel="noopener">Source on GitHub</a> — this page and the bot's methodology are open for anyone to verify.</p>
 </footer>
 
+<script src="aqi-math.js"></script>
 <script>
 (function () {
   "use strict";
 
-  // Kept identical to correctPm25()/calcAqiFromPm25() in src/aqi.ts - if that
-  // formula changes, update it here too.
-  var BREAKPOINTS = [
-    [0.0, 9.0, 0, 50],
-    [9.1, 35.4, 51, 100],
-    [35.5, 55.4, 101, 150],
-    [55.5, 125.4, 151, 200],
-    [125.5, 225.4, 201, 300],
-    [225.5, 325.4, 301, 500],
-  ];
-
-  function aqiFromPm25(pm25) {
-    for (var i = 0; i < BREAKPOINTS.length; i++) {
-      var b = BREAKPOINTS[i];
-      if (pm25 <= b[1] || i === BREAKPOINTS.length - 1) {
-        return Math.round(((b[3] - b[2]) / (b[1] - b[0])) * (pm25 - b[0]) + b[2]);
-      }
-    }
-  }
-
-  function correctPm25(pm25, rh, temp) {
-    var corrected;
-    if (pm25 < 343) {
-      corrected = 0.541 * pm25 - 0.0618 * rh + 0.00534 * temp + 3.634;
-    } else {
-      corrected = 0.46 * pm25 + 3.93e-4 * pm25 * pm25 + 2.97;
-    }
-    return Math.max(0, corrected);
-  }
+  var aqiFromPm25 = AqiMath.aqiFromPm25;
+  var correctPm25 = AqiMath.correctPm25;
 
   var rhInput = document.getElementById("rh");
   var tempInput = document.getElementById("temp");
