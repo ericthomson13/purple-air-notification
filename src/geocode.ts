@@ -11,7 +11,7 @@ export interface GeocodedPlace {
 }
 
 export async function geocodeCityState(city: string, state: string): Promise<GeocodedPlace | null> {
-  const url = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(city)}&state=${encodeURIComponent(state)}&country=US&format=json&limit=1`;
+  const url = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(city)}&state=${encodeURIComponent(state)}&countrycodes=us,ca&format=json&limit=1`;
   const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
 
   if (!res.ok) {

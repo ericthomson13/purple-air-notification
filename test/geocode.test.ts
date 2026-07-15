@@ -18,7 +18,24 @@ describe("geocodeCityState", () => {
     const [url, options] = fetchMock.mock.calls[0];
     expect(String(url)).toContain("city=Boulder");
     expect(String(url)).toContain("state=CO");
+    expect(String(url)).toContain("countrycodes=us,ca");
+    expect(String(url)).not.toContain("country=US");
     expect(options.headers["User-Agent"]).toContain("purple-air-notification");
+  });
+
+  it("scopes the search to US and Canada so Canadian city/province lookups work", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([{ lat: "43.6532", lon: "-79.3832" }]), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const place = await geocodeCityState("Toronto", "ON");
+    expect(place).toEqual({ lat: 43.6532, lon: -79.3832 });
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("city=Toronto");
+    expect(String(url)).toContain("state=ON");
+    expect(String(url)).toContain("countrycodes=us,ca");
   });
 
   it("returns null when no results are found", async () => {
