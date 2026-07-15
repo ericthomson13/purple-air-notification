@@ -78,6 +78,15 @@ function parseSlug(slug: string): { city: string; state: string } {
   return { city, state };
 }
 
+// Geocoding is scoped to the US and Canada (see geocode.ts), so a slug's
+// trailing 2-letter code is either a US state or a Canadian province -
+// there's no stored country column, so the admin digest derives it from this.
+const CANADIAN_PROVINCE_CODES = new Set(["AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT"]);
+
+export function countryForSlug(slug: string): "US" | "CA" {
+  return CANADIAN_PROVINCE_CODES.has(parseSlug(slug).state) ? "CA" : "US";
+}
+
 // Since PurpleAir/Cloudflare usage barely moves with more users (see
 // SUBSCRIBER_HARD_CAP for the one real per-location limit), it's cheap to
 // encourage sharing - included on subscription-confirmation messages.

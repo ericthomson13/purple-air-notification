@@ -1,10 +1,11 @@
-import { handleTelegramUpdate } from "./commands";
+import { countryForSlug, handleTelegramUpdate } from "./commands";
 import {
   addLocation,
   countAllSubscriptions,
   countDistinctSubscribers,
   countLocations,
   listLocations,
+  listLocationSlugs,
   listSubscriptionsForLocation,
   purgeOldReadings,
 } from "./db";
@@ -98,13 +99,20 @@ export async function sendDailySubscriberDigest(env: Env): Promise<void> {
   if (!env.ADMIN_CHAT_ID) return;
 
   try {
-    const [locations, subscriptions, distinctUsers] = await Promise.all([
+    const [locations, subscriptions, distinctUsers, slugRows] = await Promise.all([
       countLocations(env.DB),
       countAllSubscriptions(env.DB),
       countDistinctSubscribers(env.DB),
+      listLocationSlugs(env.DB),
     ]);
+    const countries = new Set(slugRows.results.map((row) => countryForSlug(row.slug))).size;
 
-    const text = `📊 Daily update: ${subscriptions} subscription(s) across ${locations} location(s) (${distinctUsers} unique user(s)).`;
+    const text =
+      "📊 Daily update\n\n" +
+      `users: ${distinctUsers}\n` +
+      `subscriptions: ${subscriptions}\n` +
+      `locations: ${locations}\n` +
+      `countries: ${countries}`;
     await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, Number(env.ADMIN_CHAT_ID), text);
   } catch (err) {
     console.error("Failed to send daily subscriber digest:", err);

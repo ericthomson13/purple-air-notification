@@ -353,9 +353,9 @@ describe("sendDailySubscriberDigest", () => {
     await env.DB.batch([env.DB.prepare("DELETE FROM subscriptions"), env.DB.prepare("DELETE FROM locations")]);
   });
 
-  it("DMs ADMIN_CHAT_ID with subscription/location/user counts", async () => {
-    const a = await makeLocation("digest-a-co", 0, 0);
-    const b = await makeLocation("digest-b-co", 0, 0);
+  it("DMs ADMIN_CHAT_ID with subscription/location/user/country counts as a table", async () => {
+    const a = await makeLocation("digest-a-co", 0, 0); // US
+    const b = await makeLocation("digest-b-on", 0, 0); // Canada
     await addSubscription(env.DB, 701, a.id);
     await addSubscription(env.DB, 701, b.id); // same user, two locations
     await addSubscription(env.DB, 702, a.id);
@@ -368,9 +368,7 @@ describe("sendDailySubscriberDigest", () => {
     const sends = telegramSends(fn);
     expect(sends).toHaveLength(1);
     expect(sends[0].chatId).toBe(999);
-    expect(sends[0].text).toContain("3 subscription(s)");
-    expect(sends[0].text).toContain("2 location(s)");
-    expect(sends[0].text).toContain("2 unique user(s)");
+    expect(sends[0].text).toBe("📊 Daily update\n\nusers: 2\nsubscriptions: 3\nlocations: 2\ncountries: 2");
   });
 
   it("does nothing when ADMIN_CHAT_ID isn't set", async () => {
@@ -399,7 +397,7 @@ describe("scheduled() cron branching", () => {
 
     // Only the digest DM should have gone out - no PurpleAir fetch for the poll.
     expect(fn.mock.calls.every(([input]: any[]) => String(typeof input === "string" ? input : input.url ?? input).includes("api.telegram.org"))).toBe(true);
-    expect(telegramSends(fn).some((s) => s.text.includes("subscription(s)"))).toBe(true);
+    expect(telegramSends(fn).some((s) => s.text.includes("subscriptions:"))).toBe(true);
   });
 
   it("runs the AQI poll (not the digest) on any other cron", async () => {
@@ -413,6 +411,6 @@ describe("scheduled() cron branching", () => {
     await waitOnExecutionContext(ctx);
 
     expect(telegramSends(fn).some((s) => s.text.includes("risen above"))).toBe(true);
-    expect(telegramSends(fn).some((s) => s.text.includes("subscription(s)"))).toBe(false);
+    expect(telegramSends(fn).some((s) => s.text.includes("subscriptions:"))).toBe(false);
   });
 });

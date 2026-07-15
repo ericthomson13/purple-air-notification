@@ -9,6 +9,10 @@ export async function countLocations(db: D1Database): Promise<number> {
   return row?.count ?? 0;
 }
 
+export function listLocationSlugs(db: D1Database) {
+  return db.prepare("SELECT slug FROM locations").all<{ slug: string }>();
+}
+
 export function getLocationBySlug(db: D1Database, slug: string) {
   return db.prepare("SELECT * FROM locations WHERE slug = ?").bind(slug).first<LocationRow>();
 }
