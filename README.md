@@ -44,10 +44,10 @@ Just want to subscribe rather than run this yourself? See
   to what that level means health-wise, not just in threshold-crossing alerts.
 - State (locations + subscriptions + recent reading history) lives in
   [Cloudflare D1](https://developers.cloudflare.com/d1/) (SQLite).
-- A second Cron Trigger (`0 15 * * 1-5` — 9am Mountain, Mon-Fri; drifts an
+- A second Cron Trigger (`0 15 * * 3` — 9am Mountain, Wednesdays only; drifts an
   hour across the MST/MDT DST change since Cloudflare cron is fixed UTC) DMs
   `ADMIN_CHAT_ID` a one-line subscriber-count digest (total subscriptions,
-  locations, unique users) so you can track growth day to day. No-ops if
+  locations, unique users) so you can track growth week to week. No-ops if
   `ADMIN_CHAT_ID` isn't set. The `scheduled()` handler tells the two
   triggers apart via `controller.cron` (see `src/index.ts`).
 

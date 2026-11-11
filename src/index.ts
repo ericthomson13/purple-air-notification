@@ -17,7 +17,7 @@ import type { Env } from "./types";
 // two scheduled triggers apart in a single scheduled() handler. Exported so
 // a test can assert it actually matches wrangler.jsonc, since nothing else
 // catches the two silently drifting apart.
-export const DAILY_DIGEST_CRON = "0 15 * * 1-5";
+export const WEEKLY_DIGEST_CRON = "0 15 * * 3";
 
 async function parseJsonBody<T>(request: Request): Promise<T | null> {
   try {
@@ -93,9 +93,9 @@ export async function pollLocations(env: Env): Promise<void> {
 
 // Lightweight subscriber-count check-in for the operator, since PurpleAir/
 // Cloudflare usage barely scales with user count - this is just for
-// tracking growth day to day, not a cost/capacity signal. No-ops if
+// tracking growth week to week, not a cost/capacity signal. No-ops if
 // ADMIN_CHAT_ID isn't configured.
-export async function sendDailySubscriberDigest(env: Env): Promise<void> {
+export async function sendWeeklySubscriberDigest(env: Env): Promise<void> {
   if (!env.ADMIN_CHAT_ID) return;
 
   try {
@@ -108,14 +108,14 @@ export async function sendDailySubscriberDigest(env: Env): Promise<void> {
     const countries = new Set(slugRows.results.map((row) => countryForSlug(row.slug))).size;
 
     const text =
-      "📊 Daily update\n\n" +
+      "📊 Weekly update\n\n" +
       `users: ${distinctUsers}\n` +
       `subscriptions: ${subscriptions}\n` +
       `locations: ${locations}\n` +
       `countries: ${countries}`;
     await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, Number(env.ADMIN_CHAT_ID), text);
   } catch (err) {
-    console.error("Failed to send daily subscriber digest:", err);
+    console.error("Failed to send weekly subscriber digest:", err);
   }
 }
 
@@ -136,8 +136,8 @@ export default {
   },
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    if (controller.cron === DAILY_DIGEST_CRON) {
-      ctx.waitUntil(sendDailySubscriberDigest(env));
+    if (controller.cron === WEEKLY_DIGEST_CRON) {
+      ctx.waitUntil(sendWeeklySubscriberDigest(env));
     } else {
       ctx.waitUntil(pollLocations(env));
     }

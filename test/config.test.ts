@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DAILY_DIGEST_CRON } from "../src/index";
+import { WEEKLY_DIGEST_CRON } from "../src/index";
 // @ts-expect-error - raw text import, not a real module
 import wranglerConfigRaw from "../wrangler.jsonc?raw";
 
@@ -9,6 +9,6 @@ describe("wrangler.jsonc / index.ts cron consistency", () => {
   // that isn't an exact match, so a typo here would just make the daily
   // digest silently never fire instead of erroring.
   it("wrangler.jsonc's cron list includes the exact string index.ts checks for", () => {
-    expect(wranglerConfigRaw).toContain(`"${DAILY_DIGEST_CRON}"`);
+    expect(wranglerConfigRaw).toContain(`"${WEEKLY_DIGEST_CRON}"`);
   });
 });
