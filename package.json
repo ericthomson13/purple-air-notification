@@ -1,7 +1,7 @@
 {
   "name": "purple-air-notification",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.1",
   "type": "module",
   "scripts": {
     "prepare": "bash scripts/install-git-hooks.sh",

@@ -7,7 +7,10 @@ import {
   deleteLocation,
   getLocationBySlug,
   getPastReading,
+  getRecentSensorReport,
   insertReadingHistory,
+  insertSensorReport,
+  isSubscribed,
   listLocations,
   listSubscriptionsForChat,
   listSubscriptionsForLocation,
@@ -15,7 +18,16 @@ import {
   updateLocationReading,
 } from "./db";
 import { geocodeCityState } from "./geocode";
-import { fetchSensorReading, findNearestSensor, getFreshReading, SensorDivergenceError, TREND_LOOKBACK_MINUTES } from "./purpleair";
+import {
+  checkAndHealErratic,
+  checkAndHealFlatline,
+  fetchSensorReading,
+  findNearestSensor,
+  getFreshReading,
+  refreshLocationReading,
+  SensorDivergenceError,
+  TREND_LOOKBACK_MINUTES,
+} from "./purpleair";
 import { formatLocationsList, formatPastNote, formatStatus, sendTelegramMessage, type TelegramUpdate } from "./telegram";
 import type { Env, LocationRow } from "./types";
 
@@ -35,6 +47,11 @@ const MAX_LOCATIONS = 50;
 // dropping notifications.
 const SUBSCRIBER_WARNING_THRESHOLD = 40;
 const SUBSCRIBER_HARD_CAP = 50;
+
+// One open /reportissue per chat+location per day - enough to avoid a single
+// sensor issue turning into a flood of admin notifications, without
+// requiring the operator to manually track or dedupe reports.
+const REPORT_RATE_LIMIT_HOURS = 24;
 
 const ADD_LOCATION_USAGE =
   "Usage: /addlocation &lt;slug&gt;\n" +
@@ -60,6 +77,7 @@ function welcomeMessage(env: Env): string {
     "/removelocation &lt;slug&gt; - remove a location you added (only the adder can)\n" +
     "/unsubscribe &lt;slug&gt; - stop alerts for a location\n" +
     "/status - show your subscriptions and their current AQI\n" +
+    "/reportissue &lt;slug&gt; - flag a sensor that seems wrong for a location you're subscribed to\n" +
     docsLine +
     "\n" +
     `AQI values are ${AQI_CORRECTION_NOTE} (using the EPA/PurpleAir correction for known PM2.5 overestimation) - they may read lower than PurpleAir's own map, which shows raw, uncorrected values by default.`
@@ -99,11 +117,22 @@ function shareLine(env: Env): string {
   return `\n\nKnow someone else who'd find this useful? Share the bot: https://t.me/${username}`;
 }
 
+// Best-effort operational heads-up to the operator. Goes to ADMIN_CHAT_ID if
+// configured - that's who can actually act on it - falling back to
+// fallbackChatId (typically whoever added the location) if no admin chat is
+// set up. Shared by the subscriber safety net and /reportissue.
+export async function notifyAdmin(env: Env, fallbackChatId: number | null, text: string): Promise<void> {
+  console.warn(text);
+
+  const recipient = env.ADMIN_CHAT_ID ? Number(env.ADMIN_CHAT_ID) : fallbackChatId;
+  if (recipient !== null) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, recipient, text);
+  }
+}
+
 // Warns when a location's subscriber count crosses the point where
 // Cloudflare's free-tier subrequest limit risks silently dropping alert
-// sends. Goes to ADMIN_CHAT_ID (the operator) if configured - that's who
-// can actually act on it (e.g. upgrade to Workers Paid) - falling back to
-// whoever added the location if no admin chat is set up.
+// sends.
 async function checkSubscriberSafetyNet(env: Env, location: LocationRow): Promise<void> {
   const count = await countSubscriptionsForLocation(env.DB, location.id);
   if (count !== SUBSCRIBER_WARNING_THRESHOLD && count !== SUBSCRIBER_HARD_CAP) return;
@@ -113,12 +142,7 @@ async function checkSubscriberSafetyNet(env: Env, location: LocationRow): Promis
       ? `${location.name} (${location.slug}) has reached ${count} subscribers — Cloudflare's free-tier limit is ~50 alert sends per threshold crossing for one location. Subscribers beyond this may silently stop getting notified. Upgrading to Workers Paid ($5/mo) removes this cap.`
       : `${location.name} (${location.slug}) just crossed ${count} subscribers — heads up, Cloudflare's free tier caps alert fan-out at ~50 recipients per threshold crossing for one location. Worth planning ahead if this keeps growing.`;
 
-  console.warn(text);
-
-  const recipient = env.ADMIN_CHAT_ID ? Number(env.ADMIN_CHAT_ID) : location.added_by_chat_id;
-  if (recipient !== null) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, recipient, text);
-  }
+  await notifyAdmin(env, location.added_by_chat_id, text);
 }
 
 // Subscribes chatId to location and returns a line describing the current
@@ -405,6 +429,100 @@ export async function handleTelegramUpdate(update: TelegramUpdate, env: Env): Pr
         }),
       );
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, statuses.join("\n\n"));
+      break;
+    }
+
+    case "/reportissue": {
+      const slug = args[0]?.toLowerCase();
+      if (!slug) {
+        await sendTelegramMessage(
+          env.TELEGRAM_BOT_TOKEN,
+          chatId,
+          "Usage: /reportissue &lt;slug&gt; — flag a sensor that looks wrong for a location you're subscribed to (see /status for yours).",
+        );
+        break;
+      }
+      const location = await getLocationBySlug(env.DB, slug);
+      if (!location) {
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `Unknown location "${slug}".`);
+        break;
+      }
+      if (!(await isSubscribed(env.DB, chatId, location.id))) {
+        await sendTelegramMessage(
+          env.TELEGRAM_BOT_TOKEN,
+          chatId,
+          `You're not subscribed to "${slug}" — /subscribe ${slug} first, then you can report an issue with its sensor.`,
+        );
+        break;
+      }
+      if (await getRecentSensorReport(env.DB, chatId, location.id, REPORT_RATE_LIMIT_HOURS)) {
+        await sendTelegramMessage(
+          env.TELEGRAM_BOT_TOKEN,
+          chatId,
+          `You already reported an issue with ${location.name} in the last 24 hours — no need to report again, it's already been noted.`,
+        );
+        break;
+      }
+
+      let status: "auto_resolved" | "pending_review";
+      let resolution: string;
+      let reply: string;
+
+      try {
+        // Bypasses getFreshReading's cache deliberately - an active report
+        // should get a live check, and this also runs the existing
+        // divergence self-heal "for free" if that's the actual problem.
+        const { reading, swappedTo } = await refreshLocationReading(env.DB, location, env.PURPLEAIR_API_KEY);
+
+        if (swappedTo) {
+          status = "auto_resolved";
+          resolution = `divergence self-heal: switched sensor ${location.sensor_index} -> ${swappedTo.sensorIndex} (${swappedTo.name})`;
+          reply = `Thanks for flagging it — you were right, ${location.name}'s old sensor was reporting inconsistent data. We've switched it to a nearby healthy sensor ("${swappedTo.name}"). No further action needed.`;
+        } else {
+          const flatline = await checkAndHealFlatline(env.DB, location, env.PURPLEAIR_API_KEY, reading);
+          if (flatline.outcome === "confirmed") {
+            status = "auto_resolved";
+            resolution = `flatline self-heal: switched sensor ${location.sensor_index} -> ${flatline.swappedTo.sensorIndex} (${flatline.swappedTo.name}), peer median ${flatline.peerMedianAqi} over ${flatline.peerCount} peers`;
+            reply = `Thanks for flagging it — you were right, ${location.name}'s sensor looked stuck (AQI barely moved for hours) while nearby sensors showed real variation. We've switched it to a nearby healthy sensor ("${flatline.swappedTo.name}"). No further action needed.`;
+          } else {
+            // Checked against actual multi-hour history (both ours and
+            // peers'), not a single live snapshot - so a sensor that's
+            // erratic but happens to read calm at this exact moment can't
+            // slip through as a false "all clear".
+            const erratic = await checkAndHealErratic(env.DB, location, env.PURPLEAIR_API_KEY, reading);
+            if (erratic.outcome === "confirmed") {
+              status = "auto_resolved";
+              resolution = `erratic self-heal: switched sensor ${location.sensor_index} -> ${erratic.swappedTo.sensorIndex} (${erratic.swappedTo.name}), own AQI range ${erratic.ownRange} vs ${erratic.stablePeerCount} stable peers`;
+              reply = `Thanks for flagging it — you were right, ${location.name}'s sensor has been swinging wildly (AQI range of ${erratic.ownRange} recently) while nearby sensors stayed calm. We've switched it to a nearby stable sensor ("${erratic.swappedTo.name}"). No further action needed.`;
+            } else {
+              status = "pending_review";
+              resolution = `flatline check: ${flatline.outcome}; erratic check: ${erratic.outcome} (current AQI ${reading.aqi}, sensor_index ${location.sensor_index}, reporter chat_id ${chatId})`;
+              reply = `Thanks for flagging it — didn't find clear automatic evidence of a malfunctioning sensor, but it's been logged for the operator to take a closer look at ${location.name} (${slug}).`;
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`/reportissue: failed to check ${slug}:`, err);
+        if (err instanceof SensorDivergenceError) {
+          status = "pending_review";
+          resolution = `divergence confirmed, no healthy replacement found (sensor_index ${location.sensor_index}, reporter chat_id ${chatId})`;
+          reply = `Thanks for flagging it — ${location.name}'s sensor is indeed reporting inconsistent data (its channels disagree) and no healthy sensor was found nearby to switch to automatically. This has been flagged for the operator.`;
+        } else {
+          status = "pending_review";
+          resolution = `check failed: ${err instanceof Error ? err.message : String(err)} (reporter chat_id ${chatId})`;
+          reply = `Thanks for flagging it — couldn't double check ${location.name}'s sensor right now, but it's been logged for the operator to look into.`;
+        }
+      }
+
+      await insertSensorReport(env.DB, { locationId: location.id, chatId, status, resolution });
+      // Only page the operator when nothing could be fixed automatically -
+      // a successful auto-resolve (any of the three self-heal paths above)
+      // is routine and doesn't need a DM, same as the scheduled poll's
+      // silent auto-heals (see pollLocations in src/index.ts).
+      if (status === "pending_review") {
+        await notifyAdmin(env, location.added_by_chat_id, `📋 /reportissue for ${location.name} (${slug}) from chat ${chatId}: ${resolution}`);
+      }
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, reply);
       break;
     }
 

@@ -1,6 +1,6 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { addLocation, addSubscription, getLocationBySlug } from "../src/db";
+import { addLocation, addSubscription, getLocationBySlug, insertReadingHistory } from "../src/db";
 import worker, { pollLocations, sendWeeklySubscriberDigest } from "../src/index";
 import type { Env } from "../src/types";
 
@@ -15,6 +15,66 @@ function sensorResponse(pm25: number, humidity = 40, temperature = 20) {
         temperature,
         last_seen: Math.floor(Date.now() / 1000) - 60,
       },
+    }),
+    { status: 200 },
+  );
+}
+
+// Like sensorResponse, but with coordinates - needed for checkAndHealFlatline,
+// which searches for peer sensors around the sensor's own lat/lon.
+function sensorResponseWithCoords(pm25: number, lat = 40.0, lon = -105.0) {
+  return new Response(
+    JSON.stringify({
+      sensor: {
+        name: "Mock Sensor",
+        "pm2.5_cf_1_a": pm25,
+        "pm2.5_cf_1_b": pm25,
+        humidity: 40,
+        temperature: 20,
+        last_seen: Math.floor(Date.now() / 1000) - 60,
+        latitude: lat,
+        longitude: lon,
+      },
+    }),
+    { status: 200 },
+  );
+}
+
+function peerListResponse(peers: Array<{ sensorIndex: number; name: string; lat: number; lon: number; pm25: number }>) {
+  const now = Math.floor(Date.now() / 1000);
+  return new Response(
+    JSON.stringify({
+      fields: ["sensor_index", "name", "latitude", "longitude", "last_seen", "pm2.5_cf_1_a", "pm2.5_cf_1_b", "humidity", "temperature"],
+      data: peers.map((p) => [p.sensorIndex, p.name, p.lat, p.lon, now, p.pm25, p.pm25, 40, 20]),
+    }),
+    { status: 200 },
+  );
+}
+
+async function seedFlatHistory(locationId: number, aqi: number, count: number) {
+  for (let i = 0; i < count; i++) {
+    await insertReadingHistory(env.DB, locationId, aqi, 1);
+  }
+}
+
+// Alternating low/high AQI so the range comfortably clears
+// ERRATIC_MIN_AQI_RANGE without needing to reverse-engineer exact values.
+async function seedErraticHistory(locationId: number, count: number) {
+  for (let i = 0; i < count; i++) {
+    await insertReadingHistory(env.DB, locationId, i % 2 === 0 ? 10 : 150, 0);
+  }
+}
+
+function stableHistory(count = 12) {
+  return Array.from({ length: count }, () => ({ pm25A: 10, pm25B: 10 }));
+}
+
+function peerHistoryResponse(rows: Array<{ pm25A: number; pm25B: number }>) {
+  const now = Math.floor(Date.now() / 1000);
+  return new Response(
+    JSON.stringify({
+      fields: ["time_stamp", "humidity", "temperature", "pm2.5_cf_1_a", "pm2.5_cf_1_b"],
+      data: rows.map((r, i) => [now - i * 600, 40, 20, r.pm25A, r.pm25B]),
     }),
     { status: 200 },
   );
@@ -345,6 +405,189 @@ describe("pollLocations", () => {
     // the failing location's reading should not have been updated
     const failedLocation = await getLocationBySlug(env.DB, "poll-fail-co");
     expect(failedLocation?.last_level).toBe(0);
+  });
+
+  // Regression coverage for a real incident: a Leadville, CO sensor kept
+  // reporting on schedule (so it never went stale) while its AQI barely
+  // moved for an entire day, and other Leadville sensors nearby showed
+  // normal variation - the scheduled poll should catch and self-heal this
+  // automatically, the same way it already does for diverging A/B channels.
+  // Successful auto-heals are deliberately silent (no admin DM) - routine
+  // self-maintenance shouldn't page the operator, especially when swapping
+  // between nearby/co-located sensors (see notifyAdmin call sites in
+  // src/index.ts and src/commands.ts). Only a confirmed-bad sensor with no
+  // healthy replacement anywhere nearby is worth a DM - see the
+  // SensorDivergenceError test below.
+  it("auto-heals a flatlined sensor silently - no admin DM, but the swap still happens", async () => {
+    const location = await makeLocation("poll-flatline-co", 57, 1);
+    await seedFlatHistory(location.id, 57, 11); // + this poll's own insert reaches the 12-row minimum
+
+    const fn = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes(`/v1/sensors/${location.sensor_index}?`)) return sensorResponseWithCoords(20); // pm25 20 -> AQI ~57, matches seeded history
+      if (url.includes("/v1/sensors?")) {
+        return peerListResponse([
+          { sensorIndex: 900, name: "Peer A", lat: 40.001, lon: -105.001, pm25: 200 },
+          { sensorIndex: 901, name: "Peer B", lat: 40.002, lon: -105.002, pm25: 200 },
+          { sensorIndex: 902, name: "Peer C", lat: 40.003, lon: -105.003, pm25: 200 },
+        ]);
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fn);
+
+    await pollLocations(testEnv({ ADMIN_CHAT_ID: "777" }));
+
+    expect(telegramSends(fn)).toHaveLength(0);
+
+    const updated = await getLocationBySlug(env.DB, "poll-flatline-co");
+    expect(updated?.sensor_index).toBe(900);
+  });
+
+  it("does not run the flatline check in a poll cycle where divergence self-heal already swapped the sensor", async () => {
+    const location = await makeLocation("poll-noflatline-after-swap-co", 0, 0);
+
+    const fn = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes(`/v1/sensors/${location.sensor_index}?`)) {
+        return new Response(
+          JSON.stringify({
+            sensor: {
+              name: "Diverging",
+              "pm2.5_cf_1_a": 4593,
+              "pm2.5_cf_1_b": 3,
+              humidity: 40,
+              temperature: 20,
+              last_seen: Math.floor(Date.now() / 1000) - 60,
+              latitude: 40.0,
+              longitude: -105.0,
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/v1/sensors/900?")) return sensorResponseWithCoords(10);
+      if (url.includes("/v1/sensors?")) {
+        return new Response(
+          JSON.stringify({
+            fields: ["sensor_index", "name", "latitude", "longitude", "last_seen", "pm2.5_cf_1_a", "pm2.5_cf_1_b"],
+            data: [[900, "Replacement", 40.001, -105.001, Math.floor(Date.now() / 1000), 10, 12]],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fn);
+
+    await pollLocations(testEnv());
+
+    const listSearchCalls = fn.mock.calls.filter((call: any[]) => {
+      const url = typeof call[0] === "string" ? call[0] : (call[0] as any).url ?? call[0];
+      return String(url).includes("/v1/sensors?");
+    });
+    expect(listSearchCalls).toHaveLength(1); // only the divergence replacement search - never a separate peer search
+
+    const updated = await getLocationBySlug(env.DB, "poll-noflatline-after-swap-co");
+    expect(updated?.sensor_index).toBe(900);
+  });
+
+  it("keeps polling other locations if the flatline check itself throws", async () => {
+    const flatlineFailing = await makeLocation("poll-flatline-throws-co", 57, 1);
+    await seedFlatHistory(flatlineFailing.id, 57, 11);
+    const healthy = await makeLocation("poll-flatline-other-healthy-co", 0, 0);
+    await addSubscription(env.DB, 999, healthy.id);
+
+    const fn = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes(`/v1/sensors/${flatlineFailing.sensor_index}?`)) return sensorResponseWithCoords(20);
+      if (url.includes(`/v1/sensors/${healthy.sensor_index}?`)) return sensorResponse(120); // pushes healthy's location into a new level
+      if (url.includes("/v1/sensors?")) return new Response("boom", { status: 500 }); // peer search for flatlineFailing fails
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fn);
+
+    await expect(pollLocations(testEnv())).resolves.not.toThrow();
+
+    expect(telegramSends(fn).some((s) => s.chatId === 999)).toBe(true);
+  });
+
+  // Regression coverage for a real incident: a Leadville, CO sensor swung
+  // between AQI ~1 and 100+ on a ~24h cycle while sensors a few meters away
+  // stayed calm the whole time - the flatline check alone misses this since
+  // it only fires when a sensor's own history is suspiciously flat, not wild.
+  it("auto-heals an erratic sensor silently - no admin DM, but the swap still happens", async () => {
+    const location = await makeLocation("poll-erratic-co", 57, 1);
+    await seedErraticHistory(location.id, 11); // + this poll's own insert reaches the 12-row minimum
+
+    const fn = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes(`/v1/sensors/${location.sensor_index}?`)) return sensorResponseWithCoords(20);
+      const historyMatch = url.match(/\/sensors\/(\d+)\/history\?/);
+      if (historyMatch) return peerHistoryResponse(stableHistory());
+      if (url.includes("/v1/sensors?")) {
+        return peerListResponse([
+          { sensorIndex: 900, name: "Peer A", lat: 40.001, lon: -105.001, pm25: 10 },
+          { sensorIndex: 901, name: "Peer B", lat: 40.002, lon: -105.002, pm25: 10 },
+          { sensorIndex: 902, name: "Peer C", lat: 40.003, lon: -105.003, pm25: 10 },
+        ]);
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fn);
+
+    await pollLocations(testEnv({ ADMIN_CHAT_ID: "777" }));
+
+    expect(telegramSends(fn)).toHaveLength(0);
+
+    const updated = await getLocationBySlug(env.DB, "poll-erratic-co");
+    expect(updated?.sensor_index).toBe(900);
+  });
+
+  // The one poll-time case that IS worth paging the operator for: a
+  // confirmed-bad sensor (diverging A/B channels) with no healthy
+  // replacement found anywhere nearby - nothing automatic can fix this.
+  it("DMs the admin when a sensor is confirmed bad but no healthy replacement is found nearby", async () => {
+    const location = await makeLocation("poll-divergence-none-co", 0, 0);
+    const other = await makeLocation("poll-divergence-none-other-co", 0, 0);
+    await addSubscription(env.DB, 999, other.id);
+
+    const fn = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes(`/v1/sensors/${location.sensor_index}?`)) {
+        return new Response(
+          JSON.stringify({
+            sensor: {
+              name: "Diverging",
+              "pm2.5_cf_1_a": 4593,
+              "pm2.5_cf_1_b": 3,
+              humidity: 40,
+              temperature: 20,
+              last_seen: Math.floor(Date.now() / 1000) - 60,
+              latitude: 40.0,
+              longitude: -105.0,
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes(`/v1/sensors/${other.sensor_index}?`)) return sensorResponse(120); // pushes other's location into a new level
+      if (url.includes("/v1/sensors?")) {
+        return new Response(JSON.stringify({ fields: ["sensor_index", "name", "latitude", "longitude", "last_seen"], data: [] }), { status: 200 }); // no replacement found
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fn);
+
+    await pollLocations(testEnv({ ADMIN_CHAT_ID: "777" }));
+
+    const sends = telegramSends(fn);
+    expect(sends.some((s) => s.chatId === 777 && s.text.includes("poll-divergence-none-co") && s.text.includes("no healthy sensor"))).toBe(true);
+    // the other location should still poll normally despite the first one failing
+    expect(sends.some((s) => s.chatId === 999)).toBe(true);
+
+    const updated = await getLocationBySlug(env.DB, "poll-divergence-none-co");
+    expect(updated?.sensor_index).toBe(location.sensor_index); // left alone
   });
 });
 

@@ -37,3 +37,19 @@ CREATE TABLE IF NOT EXISTS readings_history (
 
 CREATE INDEX IF NOT EXISTS idx_readings_history_location_checked
   ON readings_history(location_id, checked_at);
+
+-- One row per /reportissue call. Doubles as a 24h-per-chat-per-location rate
+-- limit (see getRecentSensorReport) and an audit trail of what the
+-- flatline/divergence self-heal checks did (or didn't) confirm when a
+-- subscriber flagged a sensor.
+CREATE TABLE IF NOT EXISTS sensor_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  chat_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  status TEXT NOT NULL CHECK (status IN ('auto_resolved', 'pending_review')),
+  resolution TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sensor_reports_chat_location_created
+  ON sensor_reports(chat_id, location_id, created_at);

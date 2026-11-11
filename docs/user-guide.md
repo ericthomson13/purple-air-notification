@@ -96,6 +96,9 @@ Send any of these to the bot any time:
 - `/status` — check the current reading for everywhere you're subscribed
 - `/unsubscribe leadville-co` — stop getting alerts for a location
 - `/locations` — see what locations are already available
+- `/reportissue leadville-co` — think a location's air quality reading looks
+  wrong? Flag it and the bot will double-check automatically (and fix it on
+  the spot if it can)
 - `/documentation` — link to how this bot works and why its AQI numbers may
   read differently than PurpleAir's own map
 

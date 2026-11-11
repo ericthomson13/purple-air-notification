@@ -41,6 +41,7 @@ export function deleteLocation(db: D1Database, locationId: number) {
   return db.batch([
     db.prepare("DELETE FROM readings_history WHERE location_id = ?").bind(locationId),
     db.prepare("DELETE FROM subscriptions WHERE location_id = ?").bind(locationId),
+    db.prepare("DELETE FROM sensor_reports WHERE location_id = ?").bind(locationId),
     db.prepare("DELETE FROM locations WHERE id = ?").bind(locationId),
   ]);
 }
@@ -75,6 +76,15 @@ export function getPastReading(db: D1Database, locationId: number, minutesAgo: n
     )
     .bind(locationId, `-${minutesAgo} minutes`)
     .first<PastReading>();
+}
+
+// Most recent `limit` readings for a location, newest first - used by the
+// flatline check (see checkAndHealFlatline) to look at recent AQI variance.
+export function getRecentReadings(db: D1Database, locationId: number, limit: number) {
+  return db
+    .prepare(`SELECT aqi, checked_at FROM readings_history WHERE location_id = ? ORDER BY checked_at DESC LIMIT ?`)
+    .bind(locationId, limit)
+    .all<PastReading>();
 }
 
 export function purgeOldReadings(db: D1Database) {
@@ -122,5 +132,40 @@ export function removeSubscription(db: D1Database, chatId: number, locationId: n
   return db
     .prepare("DELETE FROM subscriptions WHERE chat_id = ? AND location_id = ?")
     .bind(chatId, locationId)
+    .run();
+}
+
+// Gates /reportissue to subscribers of the location being reported, so
+// reports can't be filed for locations someone has no stake in.
+export async function isSubscribed(db: D1Database, chatId: number, locationId: number): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT 1 FROM subscriptions WHERE chat_id = ? AND location_id = ? LIMIT 1")
+    .bind(chatId, locationId)
+    .first();
+  return row !== null;
+}
+
+// Most recent report this chat filed for this location within the last
+// `hours`, if any - used to rate-limit /reportissue to one per day per
+// chat+location so a single sensor issue doesn't turn into a flood of admin
+// notifications.
+export function getRecentSensorReport(db: D1Database, chatId: number, locationId: number, hours: number) {
+  return db
+    .prepare(
+      `SELECT id FROM sensor_reports
+       WHERE chat_id = ? AND location_id = ? AND created_at >= datetime('now', ?)
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+    .bind(chatId, locationId, `-${hours} hours`)
+    .first<{ id: number }>();
+}
+
+export function insertSensorReport(
+  db: D1Database,
+  report: { locationId: number; chatId: number; status: "auto_resolved" | "pending_review"; resolution: string },
+) {
+  return db
+    .prepare("INSERT INTO sensor_reports (location_id, chat_id, status, resolution) VALUES (?, ?, ?, ?)")
+    .bind(report.locationId, report.chatId, report.status, report.resolution)
     .run();
 }

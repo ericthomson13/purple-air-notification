@@ -1,5 +1,5 @@
 import { calcAqi, levelIndexForAqi } from "./aqi";
-import { getPastReading, insertReadingHistory, updateLocationReading, updateLocationSensor } from "./db";
+import { getPastReading, getRecentReadings, insertReadingHistory, updateLocationReading, updateLocationSensor } from "./db";
 import type { LocationRow } from "./types";
 
 // How far back to look for a "was X ~Nm ago" comparison point.
@@ -38,6 +38,64 @@ interface PurpleAirSensorResponse {
 const CHANNEL_DIVERGENCE_MIN_PM25 = 10;
 const CHANNEL_DIVERGENCE_RATIO = 3;
 
+// A/B divergence doesn't catch every failure mode - a real case we hit: a
+// Leadville, CO sensor kept reporting on schedule (so it never went stale)
+// with its A/B channels agreeing with each other, but its AQI barely moved
+// for an entire day while other Leadville sensors nearby showed normal
+// variation. That's a stuck/flatlined sensor, not a channel disagreement -
+// see checkAndHealFlatline.
+
+// ~3h of history at the 10-min poll cadence - the window checked for variance.
+const FLATLINE_LOOKBACK_ROWS = 18;
+// ~2h of history required before judging a location at all - below this
+// (e.g. a location added minutes ago) there isn't enough data to trust, so
+// skip rather than risk a false positive on day one.
+const MIN_HISTORY_ROWS_FOR_FLATLINE_CHECK = 12;
+// Real PM2.5 sensors show measurable instrument noise and diurnal drift;
+// sitting inside a 2-point AQI band for 2+ hours is far more consistent with
+// a frozen reading pipeline than real air.
+const FLATLINE_MAX_AQI_RANGE = 2;
+// Require several independent healthy neighbors before trusting a peer
+// comparison enough to act on it - this can rewrite a location's
+// sensor_index unattended across every registered location, so a single
+// possibly-also-miscalibrated neighbor isn't enough to confirm.
+const MIN_PEER_COUNT_FOR_FLATLINE_CONFIRMATION = 3;
+// Required gap between the flatlined sensor's value and the peer median to
+// call it confirmed. Chosen well above normal sensor-to-sensor/correction
+// noise, but well below the swings a real pollution event (smoke, dust)
+// would produce - which a genuinely stuck sensor would completely miss.
+const FLATLINE_PEER_GAP_MIN_AQI = 15;
+
+// The inverse failure mode - a real case we hit: a Leadville, CO sensor
+// swung between AQI ~1 and 100+ on a roughly 24h cycle, while two sensors a
+// few meters away at the same physical site stayed under an AQI range of 5
+// for 48 straight hours. A/B divergence and the flatline check both miss
+// this - the sensor's own channels agree and its value is anything but flat.
+// See checkAndHealErratic.
+const ERRATIC_LOOKBACK_ROWS = FLATLINE_LOOKBACK_ROWS;
+const MIN_HISTORY_ROWS_FOR_ERRATIC_CHECK = MIN_HISTORY_ROWS_FOR_FLATLINE_CHECK;
+// A swing this big within ~3h is well beyond ordinary sensor noise - but a
+// fast-moving real smoke plume could plausibly cause it too, which is
+// exactly why this is only a *candidate* threshold, not a verdict:
+// confirmation requires nearby sensors' own history over the same window to
+// have stayed comparatively calm (see below), not just a live snapshot.
+const ERRATIC_MIN_AQI_RANGE = 60;
+// Bounds how many nearby peers' full history we fetch - each is a separate
+// PurpleAir API call, only spent once our own reading already looks
+// erratic, and only for the closest candidates.
+const MAX_PEERS_TO_CHECK_HISTORY = 5;
+// Require several peers to agree the area was calm, not just one - same
+// reasoning as MIN_PEER_COUNT_FOR_FLATLINE_CONFIRMATION: this can rewrite a
+// location's sensor_index unattended.
+const MIN_STABLE_PEERS_FOR_ERRATIC_CONFIRMATION = 3;
+// A peer counts as "stable" if its own history stayed within this AQI range
+// over the same lookback window - looser than FLATLINE_MAX_AQI_RANGE since
+// this only needs to be "calm relative to us," not perfectly flat.
+const PEER_HISTORY_MAX_AQI_RANGE = 15;
+// ~3h, matching ERRATIC_LOOKBACK_ROWS at the 10-min poll cadence - the same
+// window our own history check looks at, so the comparison is apples-to-apples.
+const ERRATIC_HISTORY_LOOKBACK_SECONDS = ERRATIC_LOOKBACK_ROWS * 10 * 60;
+
 function channelsDiverge(pm25A: number, pm25B: number): boolean {
   const hi = Math.max(pm25A, pm25B);
   const lo = Math.min(pm25A, pm25B);
@@ -66,6 +124,11 @@ export interface SensorReading {
   temperature: number;
   lastSeen: number;
   staleSeconds: number;
+  // Sensor's own coordinates from PurpleAir, not the location row's (which
+  // isn't always populated - see LocationRow.lat/lon). Used by
+  // checkAndHealFlatline to search for peer sensors to compare against.
+  lat: number | null;
+  lon: number | null;
 }
 
 const MAX_STALE_SECONDS = 60 * 60; // 1 hour
@@ -107,6 +170,8 @@ export async function fetchSensorReading(sensorIndex: number, apiKey: string): P
     temperature: s.temperature,
     lastSeen: s.last_seen,
     staleSeconds,
+    lat: s.latitude ?? null,
+    lon: s.longitude ?? null,
   };
 }
 
@@ -250,4 +315,209 @@ export async function findNearestSensor(lat: number, lon: number, apiKey: string
   }
 
   return best;
+}
+
+export interface PeerReading {
+  sensorIndex: number;
+  name: string;
+  aqi: number;
+  distanceDegrees: number;
+}
+
+// Finds nearby healthy PurpleAir sensors' current AQI, for comparing against
+// a location's own possibly-flatlined value (see checkAndHealFlatline).
+// Deliberately kept separate from findNearestSensor rather than sharing its
+// fetch/filter logic - that function's existing tests use mock list
+// responses that omit humidity/temperature entirely, and this needs both to
+// compute AQI via calcAqi.
+export async function findPeerAqiReadings(lat: number, lon: number, apiKey: string, excludeSensorIndex: number): Promise<PeerReading[]> {
+  const url =
+    `https://api.purpleair.com/v1/sensors?fields=name,latitude,longitude,last_seen,pm2.5_cf_1_a,pm2.5_cf_1_b,humidity,temperature` +
+    `&nwlat=${lat + SEARCH_BOX_DEGREES}&nwlng=${lon - SEARCH_BOX_DEGREES}` +
+    `&selat=${lat - SEARCH_BOX_DEGREES}&selng=${lon + SEARCH_BOX_DEGREES}`;
+  const res = await fetch(url, { headers: { "X-API-Key": apiKey } });
+
+  if (!res.ok) {
+    throw new Error(`PurpleAir API error ${res.status}: ${await res.text()}`);
+  }
+
+  const data = (await res.json()) as PurpleAirSensorsListResponse;
+  const col = Object.fromEntries(data.fields.map((f, i) => [f, i]));
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
+  const peers: PeerReading[] = [];
+  for (const row of data.data) {
+    const sensorIndex = row[col.sensor_index] as number;
+    if (sensorIndex === excludeSensorIndex) continue;
+
+    const lastSeen = row[col.last_seen] as number;
+    if (nowSeconds - lastSeen > MAX_SENSOR_STALE_SECONDS) continue;
+
+    const pm25A = row[col["pm2.5_cf_1_a"]] as number | null;
+    const pm25B = row[col["pm2.5_cf_1_b"]] as number | null;
+    const humidity = row[col.humidity] as number | null;
+    const temperature = row[col.temperature] as number | null;
+    if (pm25A === null || pm25B === null || humidity === null || temperature === null || channelsDiverge(pm25A, pm25B)) continue;
+
+    const sLat = row[col.latitude] as number;
+    const sLon = row[col.longitude] as number;
+    const distanceDegrees = Math.hypot(sLat - lat, sLon - lon);
+    const aqi = calcAqi((pm25A + pm25B) / 2, humidity, temperature);
+
+    peers.push({ sensorIndex, name: row[col.name] as string, aqi, distanceDegrees });
+  }
+
+  return peers.sort((a, b) => a.distanceDegrees - b.distanceDegrees);
+}
+
+export type FlatlineCheckResult =
+  | { outcome: "insufficient_history" | "not_flat" | "no_coordinates" }
+  | { outcome: "insufficient_peers"; peerCount: number }
+  | { outcome: "peers_agree"; peerMedianAqi: number; peerCount: number }
+  | { outcome: "confirmed"; swappedTo: PeerReading; peerMedianAqi: number; peerCount: number; range: number };
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+// Checks whether a location's sensor looks stuck (see the comment above
+// FLATLINE_LOOKBACK_ROWS) and, if nearby healthy peers confirm it's actually
+// wrong - not just a genuinely calm/stable day - swaps the location to the
+// closest one, the same way divergence self-heal does. Called after
+// refreshLocationReading persists a new reading, since it needs
+// readings_history. Doesn't send any notifications itself (no Env/bot token
+// at this layer) - callers decide what to tell users/admins from the
+// returned outcome.
+export async function checkAndHealFlatline(
+  db: D1Database,
+  location: LocationRow,
+  apiKey: string,
+  reading: SensorReading,
+): Promise<FlatlineCheckResult> {
+  const { results: recent } = await getRecentReadings(db, location.id, FLATLINE_LOOKBACK_ROWS);
+  if (recent.length < MIN_HISTORY_ROWS_FOR_FLATLINE_CHECK) return { outcome: "insufficient_history" };
+
+  const aqis = recent.map((r) => r.aqi);
+  const range = Math.max(...aqis) - Math.min(...aqis);
+  if (range > FLATLINE_MAX_AQI_RANGE) return { outcome: "not_flat" };
+
+  if (reading.lat === null || reading.lon === null) return { outcome: "no_coordinates" };
+
+  const peers = await findPeerAqiReadings(reading.lat, reading.lon, apiKey, location.sensor_index);
+  if (peers.length < MIN_PEER_COUNT_FOR_FLATLINE_CONFIRMATION) return { outcome: "insufficient_peers", peerCount: peers.length };
+
+  const peerMedianAqi = median(peers.map((p) => p.aqi));
+  if (Math.abs(reading.aqi - peerMedianAqi) < FLATLINE_PEER_GAP_MIN_AQI) {
+    return { outcome: "peers_agree", peerMedianAqi, peerCount: peers.length };
+  }
+
+  const swappedTo = peers[0];
+  await updateLocationSensor(db, location.id, swappedTo.sensorIndex);
+  console.warn(
+    `Location ${location.slug}: sensor ${location.sensor_index} looked flatlined (AQI range ${range} over ${recent.length} readings) ` +
+      `while ${peers.length} nearby sensors averaged ${peerMedianAqi} - switched to sensor ${swappedTo.sensorIndex} (${swappedTo.name})`,
+  );
+  return { outcome: "confirmed", swappedTo, peerMedianAqi, peerCount: peers.length, range };
+}
+
+interface PurpleAirHistoryResponse {
+  fields: string[];
+  data: Array<Array<number | null>>;
+}
+
+// A sensor's own AQI history over the last `lookbackSeconds` - used to check
+// whether a candidate peer's readings actually stayed calm over the same
+// window a location's own sensor looked erratic (see checkAndHealErratic).
+// PurpleAir's history endpoint doesn't echo fields back in the order
+// requested (confirmed by hand against the live API), so - same as
+// findPeerAqiReadings - field positions are looked up from the response's
+// own `fields` array rather than assumed.
+async function fetchSensorHistory(sensorIndex: number, apiKey: string, lookbackSeconds: number): Promise<number[]> {
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - lookbackSeconds;
+  const url =
+    `https://api.purpleair.com/v1/sensors/${sensorIndex}/history?start_timestamp=${start}&end_timestamp=${end}` +
+    `&average=10&fields=pm2.5_cf_1_a,pm2.5_cf_1_b,humidity,temperature`;
+  const res = await fetch(url, { headers: { "X-API-Key": apiKey } });
+
+  if (!res.ok) {
+    throw new Error(`PurpleAir API error ${res.status}: ${await res.text()}`);
+  }
+
+  const data = (await res.json()) as PurpleAirHistoryResponse;
+  const col = Object.fromEntries(data.fields.map((f, i) => [f, i]));
+
+  const aqis: number[] = [];
+  for (const row of data.data) {
+    const pm25A = row[col["pm2.5_cf_1_a"]];
+    const pm25B = row[col["pm2.5_cf_1_b"]];
+    const humidity = row[col.humidity];
+    const temperature = row[col.temperature];
+    if (pm25A === null || pm25A === undefined || pm25B === null || pm25B === undefined) continue;
+    if (humidity === null || humidity === undefined || temperature === null || temperature === undefined) continue;
+    if (channelsDiverge(pm25A, pm25B)) continue;
+    aqis.push(calcAqi((pm25A + pm25B) / 2, humidity, temperature));
+  }
+  return aqis;
+}
+
+export type ErraticCheckResult =
+  | { outcome: "insufficient_history" | "not_erratic" | "no_coordinates" }
+  | { outcome: "insufficient_stable_peers"; stablePeerCount: number; checkedPeerCount: number }
+  | { outcome: "confirmed"; swappedTo: PeerReading; ownRange: number; stablePeerCount: number };
+
+// Checks whether a location's sensor looks erratic (see the comment above
+// ERRATIC_MIN_AQI_RANGE) and, if enough nearby healthy peers' own history
+// confirms they stayed calm over the same window - not just a live snapshot,
+// which an erratic sensor could pass or fail depending on the moment it
+// happens to be checked - swaps the location to the closest stable one.
+// Called after refreshLocationReading persists a new reading, since it needs
+// readings_history. Doesn't send any notifications itself (no Env/bot token
+// at this layer) - callers decide what to tell users/admins from the
+// returned outcome.
+export async function checkAndHealErratic(
+  db: D1Database,
+  location: LocationRow,
+  apiKey: string,
+  reading: SensorReading,
+): Promise<ErraticCheckResult> {
+  const { results: recent } = await getRecentReadings(db, location.id, ERRATIC_LOOKBACK_ROWS);
+  if (recent.length < MIN_HISTORY_ROWS_FOR_ERRATIC_CHECK) return { outcome: "insufficient_history" };
+
+  const aqis = recent.map((r) => r.aqi);
+  const ownRange = Math.max(...aqis) - Math.min(...aqis);
+  if (ownRange < ERRATIC_MIN_AQI_RANGE) return { outcome: "not_erratic" };
+
+  if (reading.lat === null || reading.lon === null) return { outcome: "no_coordinates" };
+
+  const peers = await findPeerAqiReadings(reading.lat, reading.lon, apiKey, location.sensor_index);
+  const candidates = peers.slice(0, MAX_PEERS_TO_CHECK_HISTORY);
+
+  const stablePeers: PeerReading[] = [];
+  for (const peer of candidates) {
+    let history: number[];
+    try {
+      history = await fetchSensorHistory(peer.sensorIndex, apiKey, ERRATIC_HISTORY_LOOKBACK_SECONDS);
+    } catch (err) {
+      console.error(`Failed to fetch history for candidate peer ${peer.sensorIndex}:`, err);
+      continue;
+    }
+    if (history.length < MIN_HISTORY_ROWS_FOR_ERRATIC_CHECK) continue;
+    const peerRange = Math.max(...history) - Math.min(...history);
+    if (peerRange <= PEER_HISTORY_MAX_AQI_RANGE) stablePeers.push(peer);
+  }
+
+  if (stablePeers.length < MIN_STABLE_PEERS_FOR_ERRATIC_CONFIRMATION) {
+    return { outcome: "insufficient_stable_peers", stablePeerCount: stablePeers.length, checkedPeerCount: candidates.length };
+  }
+
+  const swappedTo = stablePeers[0]; // nearest stable peer - candidates was distance-sorted
+  await updateLocationSensor(db, location.id, swappedTo.sensorIndex);
+  console.warn(
+    `Location ${location.slug}: sensor ${location.sensor_index} looked erratic (AQI range ${ownRange} over ${recent.length} readings) ` +
+      `while ${stablePeers.length} nearby sensors stayed stable - switched to sensor ${swappedTo.sensorIndex} (${swappedTo.name})`,
+  );
+  return { outcome: "confirmed", swappedTo, ownRange, stablePeerCount: stablePeers.length };
 }

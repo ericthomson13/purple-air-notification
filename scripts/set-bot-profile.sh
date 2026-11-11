@@ -25,7 +25,8 @@ curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyCommands" \
       {"command": "addlocation", "description": "Add a new location and subscribe, e.g. /addlocation boulder-co"},
       {"command": "removelocation", "description": "Remove a location you added"},
       {"command": "unsubscribe", "description": "Stop alerts for a location"},
-      {"command": "status", "description": "Show your subscriptions and current AQI"}
+      {"command": "status", "description": "Show your subscriptions and current AQI"},
+      {"command": "reportissue", "description": "Flag a sensor that seems wrong for a location you're subscribed to"}
     ]
   }'
 echo ""

@@ -565,6 +565,287 @@ describe("/status", () => {
   });
 });
 
+// Same fetch-routing shape as installDivergingSensorFetch, but returns a
+// healthy (non-diverging) reading for the location's own sensor (123) and a
+// peer-search response that includes humidity/temperature so calcAqi can run
+// - used for /reportissue's flatline-confirmation path, which is a distinct
+// PurpleAir query (findPeerAqiReadings) from the plain nearest-sensor search
+// divergence self-heal uses.
+function installFlatlineFetch(peers: Array<{ sensorIndex: number; name: string; lat: number; lon: number; pm25A: number; pm25B: number }>) {
+  const fn = vi.fn(async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("api.telegram.org")) return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+    if (url.includes("/v1/sensors/123?")) {
+      return new Response(
+        JSON.stringify({
+          sensor: {
+            name: "Flatlined Sensor",
+            "pm2.5_cf_1_a": 20,
+            "pm2.5_cf_1_b": 20,
+            humidity: 40,
+            temperature: 20,
+            last_seen: Math.floor(Date.now() / 1000) - 60,
+            latitude: 40.0,
+            longitude: -105.0,
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    if (url.includes("/v1/sensors?")) {
+      const now = Math.floor(Date.now() / 1000);
+      return new Response(
+        JSON.stringify({
+          fields: ["sensor_index", "name", "latitude", "longitude", "last_seen", "pm2.5_cf_1_a", "pm2.5_cf_1_b", "humidity", "temperature"],
+          data: peers.map((p) => [p.sensorIndex, p.name, p.lat, p.lon, now, p.pm25A, p.pm25B, 40, 20]),
+        }),
+        { status: 200 },
+      );
+    }
+    throw new Error(`Unexpected fetch to ${url}`);
+  });
+  vi.stubGlobal("fetch", fn);
+  return fn;
+}
+
+async function seedFlatHistory(locationId: number, aqi: number, count: number) {
+  for (let i = 0; i < count; i++) {
+    await env.DB.prepare("INSERT INTO readings_history (location_id, aqi, level) VALUES (?, ?, ?)").bind(locationId, aqi, 1).run();
+  }
+}
+
+// Regression coverage for a real incident: a Leadville, CO sensor swung
+// between AQI ~1 and 100+ on a ~24h cycle while sensors a few meters away
+// stayed calm the whole time - the inverse of the flatline case above, and
+// something a single live snapshot could miss depending on when it's
+// checked (see checkAndHealErratic's use of actual PurpleAir history).
+async function seedErraticHistory(locationId: number, count = 11) {
+  for (let i = 0; i < count; i++) {
+    await env.DB.prepare("INSERT INTO readings_history (location_id, aqi, level) VALUES (?, ?, ?)").bind(locationId, i % 2 === 0 ? 10 : 150, 0).run();
+  }
+}
+
+function stableHistory(count = 12) {
+  return Array.from({ length: count }, () => ({ pm25A: 10, pm25B: 10 }));
+}
+
+function volatileHistory(count = 12) {
+  return Array.from({ length: count }, (_, i) => (i % 2 === 0 ? { pm25A: 5, pm25B: 5 } : { pm25A: 200, pm25B: 200 }));
+}
+
+function installErraticFetch(
+  peers: Array<{ sensorIndex: number; name: string; lat: number; lon: number; pm25A: number; pm25B: number }>,
+  historyBySensor: Record<number, Array<{ pm25A: number; pm25B: number }>>,
+) {
+  const fn = vi.fn(async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("api.telegram.org")) return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+    if (url.includes("/v1/sensors/123?")) {
+      return new Response(
+        JSON.stringify({
+          sensor: {
+            name: "Erratic Sensor",
+            "pm2.5_cf_1_a": 20,
+            "pm2.5_cf_1_b": 20,
+            humidity: 40,
+            temperature: 20,
+            last_seen: Math.floor(Date.now() / 1000) - 60,
+            latitude: 40.0,
+            longitude: -105.0,
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    const historyMatch = url.match(/\/sensors\/(\d+)\/history\?/);
+    if (historyMatch) {
+      const sensorIndex = Number(historyMatch[1]);
+      const rows = historyBySensor[sensorIndex] ?? [];
+      const now = Math.floor(Date.now() / 1000);
+      return new Response(
+        JSON.stringify({
+          fields: ["time_stamp", "humidity", "temperature", "pm2.5_cf_1_a", "pm2.5_cf_1_b"],
+          data: rows.map((r, i) => [now - i * 600, 40, 20, r.pm25A, r.pm25B]),
+        }),
+        { status: 200 },
+      );
+    }
+    if (url.includes("/v1/sensors?")) {
+      const now = Math.floor(Date.now() / 1000);
+      return new Response(
+        JSON.stringify({
+          fields: ["sensor_index", "name", "latitude", "longitude", "last_seen", "pm2.5_cf_1_a", "pm2.5_cf_1_b", "humidity", "temperature"],
+          data: peers.map((p) => [p.sensorIndex, p.name, p.lat, p.lon, now, p.pm25A, p.pm25B, 40, 20]),
+        }),
+        { status: 200 },
+      );
+    }
+    throw new Error(`Unexpected fetch to ${url}`);
+  });
+  vi.stubGlobal("fetch", fn);
+  return fn;
+}
+
+describe("/reportissue", () => {
+  it("requires a slug", async () => {
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(800, "/reportissue"), testEnv());
+    expect(telegramMessagesTo(fn, 800)[0]).toContain("Usage");
+  });
+
+  it("rejects an unknown location", async () => {
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(801, "/reportissue nope-co"), testEnv());
+    expect(telegramMessagesTo(fn, 801)[0]).toContain('Unknown location "nope-co"');
+  });
+
+  it("rejects a chat that isn't subscribed to the location", async () => {
+    await makeLocation("cmd-report-notsub-co");
+    const { fn } = installMockFetch();
+    await handleTelegramUpdate(updateFor(802, "/reportissue cmd-report-notsub-co"), testEnv());
+    expect(telegramMessagesTo(fn, 802)[0]).toContain("not subscribed");
+  });
+
+  it("rate-limits a second report within 24h for the same chat + location", async () => {
+    const location = await makeLocation("cmd-report-ratelimit-co");
+    await addSubscription(env.DB, 803, location.id);
+    const { fn } = installMockFetch();
+
+    await handleTelegramUpdate(updateFor(803, "/reportissue cmd-report-ratelimit-co"), testEnv());
+    fn.mockClear();
+    await handleTelegramUpdate(updateFor(803, "/reportissue cmd-report-ratelimit-co"), testEnv());
+
+    expect(telegramMessagesTo(fn, 803)[0]).toContain("already reported");
+  });
+
+  it("self-heals and tells the user when the sensor turns out to have diverging A/B channels - no admin DM for a successful auto-resolve", async () => {
+    const location = await makeLocation("cmd-report-divergence-co");
+    await addSubscription(env.DB, 830, location.id);
+    const fn = installDivergingSensorFetch({ sensorIndex: 456, name: "Healthy Nearby" });
+
+    await handleTelegramUpdate(updateFor(830, "/reportissue cmd-report-divergence-co"), testEnv({ ADMIN_CHAT_ID: "777" }));
+
+    const text = telegramMessagesTo(fn, 830)[0];
+    expect(text).toContain("inconsistent data");
+    expect(text).toContain("Healthy Nearby");
+    expect(telegramMessagesTo(fn, 777)).toHaveLength(0);
+
+    const updated = await getLocationBySlug(env.DB, "cmd-report-divergence-co");
+    expect(updated?.sensor_index).toBe(456);
+  });
+
+  it("logs a pending-review report when the sensor is confirmed divergent but no healthy replacement is found", async () => {
+    const location = await makeLocation("cmd-report-divergence-none-co");
+    await addSubscription(env.DB, 831, location.id);
+    const fn = installDivergingSensorFetch();
+
+    await handleTelegramUpdate(updateFor(831, "/reportissue cmd-report-divergence-none-co"), testEnv());
+
+    expect(telegramMessagesTo(fn, 831)[0]).toContain("its channels disagree");
+    const updated = await getLocationBySlug(env.DB, "cmd-report-divergence-none-co");
+    expect(updated?.sensor_index).toBe(123);
+  });
+
+  it("self-heals and tells the user when the sensor is confirmed flatlined against peers - no admin DM for a successful auto-resolve", async () => {
+    const location = await makeLocation("cmd-report-flatline-co");
+    await addSubscription(env.DB, 810, location.id);
+    await seedFlatHistory(location.id, 57, 11); // refreshLocationReading appends the 12th during the report
+
+    const fn = installFlatlineFetch([
+      { sensorIndex: 900, name: "Peer A", lat: 40.001, lon: -105.001, pm25A: 200, pm25B: 200 },
+      { sensorIndex: 901, name: "Peer B", lat: 40.002, lon: -105.002, pm25A: 200, pm25B: 200 },
+      { sensorIndex: 902, name: "Peer C", lat: 40.003, lon: -105.003, pm25A: 200, pm25B: 200 },
+    ]);
+
+    await handleTelegramUpdate(updateFor(810, "/reportissue cmd-report-flatline-co"), testEnv({ ADMIN_CHAT_ID: "777" }));
+
+    const text = telegramMessagesTo(fn, 810)[0];
+    expect(text).toContain("looked stuck");
+    expect(text).toContain("Peer A");
+    expect(telegramMessagesTo(fn, 777)).toHaveLength(0);
+
+    const updated = await getLocationBySlug(env.DB, "cmd-report-flatline-co");
+    expect(updated?.sensor_index).toBe(900);
+  });
+
+  it("logs a pending-review report and notifies the admin when automatic checks can't confirm anything", async () => {
+    const location = await makeLocation("cmd-report-pending-co", 24680);
+    await addSubscription(env.DB, 820, location.id);
+    await seedFlatHistory(location.id, 57, 11);
+
+    // Only one healthy peer nearby - not enough to confirm (see
+    // MIN_PEER_COUNT_FOR_FLATLINE_CONFIRMATION in src/purpleair.ts).
+    const fn = installFlatlineFetch([{ sensorIndex: 900, name: "Peer A", lat: 40.001, lon: -105.001, pm25A: 200, pm25B: 200 }]);
+
+    await handleTelegramUpdate(updateFor(820, "/reportissue cmd-report-pending-co"), testEnv({ ADMIN_CHAT_ID: "777" }));
+
+    expect(telegramMessagesTo(fn, 820)[0]).toContain("logged for the operator");
+    expect(telegramMessagesTo(fn, 777).some((t) => t.includes("cmd-report-pending-co"))).toBe(true);
+
+    const updated = await getLocationBySlug(env.DB, "cmd-report-pending-co");
+    expect(updated?.sensor_index).toBe(123);
+  });
+
+  it("notifies the admin channel, falling back to the location owner when ADMIN_CHAT_ID isn't set", async () => {
+    await makeLocation("cmd-report-adminfallback-co", 24680);
+    const location = (await getLocationBySlug(env.DB, "cmd-report-adminfallback-co"))!;
+    await addSubscription(env.DB, 840, location.id);
+    await seedFlatHistory(location.id, 57, 11);
+
+    const fn = installFlatlineFetch([{ sensorIndex: 900, name: "Peer A", lat: 40.001, lon: -105.001, pm25A: 200, pm25B: 200 }]);
+
+    await handleTelegramUpdate(updateFor(840, "/reportissue cmd-report-adminfallback-co"), testEnv());
+
+    expect(telegramMessagesTo(fn, 24680).some((t) => t.includes("cmd-report-adminfallback-co"))).toBe(true);
+  });
+
+  it("self-heals and tells the user when the sensor is confirmed erratic against stable peers - no admin DM for a successful auto-resolve", async () => {
+    const location = await makeLocation("cmd-report-erratic-co");
+    await addSubscription(env.DB, 850, location.id);
+    await seedErraticHistory(location.id);
+
+    const fn = installErraticFetch(
+      [
+        { sensorIndex: 900, name: "Peer A", lat: 40.001, lon: -105.001, pm25A: 10, pm25B: 10 },
+        { sensorIndex: 901, name: "Peer B", lat: 40.002, lon: -105.002, pm25A: 10, pm25B: 10 },
+        { sensorIndex: 902, name: "Peer C", lat: 40.003, lon: -105.003, pm25A: 10, pm25B: 10 },
+      ],
+      { 900: stableHistory(), 901: stableHistory(), 902: stableHistory() },
+    );
+
+    await handleTelegramUpdate(updateFor(850, "/reportissue cmd-report-erratic-co"), testEnv({ ADMIN_CHAT_ID: "777" }));
+
+    const text = telegramMessagesTo(fn, 850)[0];
+    expect(text).toContain("swinging wildly");
+    expect(text).toContain("Peer A");
+    expect(telegramMessagesTo(fn, 777)).toHaveLength(0);
+
+    const updated = await getLocationBySlug(env.DB, "cmd-report-erratic-co");
+    expect(updated?.sensor_index).toBe(900);
+  });
+
+  it("logs a pending-review report when the sensor looks erratic but peers were also volatile - a real event, not a malfunction", async () => {
+    const location = await makeLocation("cmd-report-erratic-realevent-co", 24680);
+    await addSubscription(env.DB, 851, location.id);
+    await seedErraticHistory(location.id);
+
+    const fn = installErraticFetch(
+      [
+        { sensorIndex: 900, name: "Peer A", lat: 40.001, lon: -105.001, pm25A: 10, pm25B: 10 },
+        { sensorIndex: 901, name: "Peer B", lat: 40.002, lon: -105.002, pm25A: 10, pm25B: 10 },
+        { sensorIndex: 902, name: "Peer C", lat: 40.003, lon: -105.003, pm25A: 10, pm25B: 10 },
+      ],
+      { 900: volatileHistory(), 901: volatileHistory(), 902: volatileHistory() },
+    );
+
+    await handleTelegramUpdate(updateFor(851, "/reportissue cmd-report-erratic-realevent-co"), testEnv());
+
+    expect(telegramMessagesTo(fn, 851)[0]).toContain("logged for the operator");
+    const updated = await getLocationBySlug(env.DB, "cmd-report-erratic-realevent-co");
+    expect(updated?.sensor_index).toBe(123);
+  });
+});
+
 describe("/documentation", () => {
   it("links to the docs site when DOCUMENTATION_URL is configured", async () => {
     const { fn } = installMockFetch();

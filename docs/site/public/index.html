@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>PurpleAir AQI Notifier — About &amp; Methodology</title>
-<meta name="description" content="What this bot does, and why its AQI numbers are EPA-corrected and may differ from PurpleAir's own map." />
+<title>PurpleAir AQI Notifier — About, Methodology &amp; Usage</title>
+<meta name="description" content="What this bot does, how to use it, and why its AQI numbers are EPA-corrected and may differ from PurpleAir's own map." />
 <style>
   :root {
     --bg: #ffffff;
@@ -184,6 +184,7 @@
   <a href="#methodology">Why the numbers may differ from PurpleAir</a>
   <a href="#levels">AQI levels</a>
   <a href="#sensor-health">Sensor health checks</a>
+  <a href="#usage">Using the bot</a>
   <a href="#sources">Sources</a>
 </nav>
 
@@ -203,9 +204,9 @@
 </div>
 <p>
   You can subscribe to more than one location, check <code>/status</code> any time, and
-  <code>/unsubscribe</code> whenever you want. Full walkthrough (including how to point it at a
-  specific sensor by hand) is in the
-  <a href="https://github.com/ericthomson13/purple-air-notification/blob/main/docs/user-guide.md" target="_blank" rel="noopener">user guide</a>.
+  <code>/unsubscribe</code> whenever you want. Full command reference (including how to point it at a
+  specific sensor by hand, and how to flag a sensor that looks wrong) is under
+  <a href="#usage">Using the bot</a> below.
 </p>
 
 <h2 id="methodology">Why the numbers may differ from PurpleAir's own map</h2>
@@ -340,12 +341,73 @@ if (pm25 &lt; 343) {
 
 <h2 id="sensor-health">Sensor health checks</h2>
 <p>
-  PurpleAir sensors have two independent PM2.5 channels that normally agree closely. Occasionally one
-  channel fails (dust, insects, moisture) and reports wildly different numbers from the other — this
-  bot checks for that disagreement before trusting a reading. If it finds a diverging sensor, it
-  automatically looks for a nearby healthy sensor and switches the location to it, and lets subscribers
-  know when that happens. If no healthy sensor is nearby, it says so rather than silently reporting a
-  broken reading.
+  Individual PurpleAir sensors can go wrong in more than one way, and this bot checks for three of them
+  on every scheduled poll, automatically switching a location to a nearby healthy sensor whenever it
+  confirms one:
+</p>
+<div class="card">
+  <p style="margin-top:0"><strong>Diverging channels.</strong> Each sensor has two independent PM2.5
+  sensors that normally agree closely. Occasionally one fails (dust, insects, moisture) and reports
+  wildly different numbers from the other — this bot checks for that disagreement before trusting a
+  reading.</p>
+  <p><strong>Flatlined.</strong> A sensor can keep reporting right on schedule — so it never looks
+  offline — while its value has effectively stopped moving for hours. Confirmed against nearby sensors'
+  current reading first, so a genuinely calm, stable-weather day doesn't get mistaken for a stuck
+  sensor.</p>
+  <p style="margin-bottom:0"><strong>Erratic.</strong> The opposite problem — a sensor's own reading
+  swings wildly while sensors a few meters away stay calm the whole time. Confirming this pulls each
+  nearby sensor's own recent history from PurpleAir directly (not just a single live snapshot, which an
+  erratic sensor could pass or fail depending on the exact moment it's checked), and only acts if
+  several of them were genuinely stable over the same window — a real, shared event that made
+  everything swing doesn't trigger a switch.</p>
+</div>
+<p>
+  Subscribers can also flag a location directly with <code>/reportissue &lt;slug&gt;</code> — the bot
+  re-runs all of these checks immediately and either fixes it on the spot or logs it for review, no
+  manual intervention required to file or triage a report.
+</p>
+<p>
+  A successful switch happens quietly in the background — the bot just keeps using the healthy sensor
+  going forward, the same as it always has. (If you check <code>/status</code> or file a
+  <code>/reportissue</code> right around when it happens, it'll mention the switch — but there's no
+  proactive alert for it, since routine self-healing doesn't need anyone's attention.) If a sensor is
+  confirmed bad and there's genuinely no healthy replacement nearby, the bot says so rather than
+  silently reporting a broken reading.
+</p>
+
+<h2 id="usage">Using the bot</h2>
+<p>
+  Everything below happens by DMing <a href="https://t.me/aqi_et_notifier_bot" target="_blank" rel="noopener">the bot on Telegram</a> — no
+  account, no website, no cost. If you don't have Telegram yet, it's a free app (App Store, Google
+  Play, or <a href="https://web.telegram.org/" target="_blank" rel="noopener">web.telegram.org</a> with
+  no download at all) — sign-up takes about a minute with just a phone number.
+</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code>/start</code></td><td>Welcome message and a quick command list.</td></tr>
+    <tr><td><code>/locations</code></td><td>List every location currently tracked.</td></tr>
+    <tr><td><code>/subscribe &lt;slug&gt;</code></td><td>Get alerts for a location, e.g. <code>/subscribe leadville-co</code>.</td></tr>
+    <tr><td><code>/addlocation &lt;slug&gt;</code></td><td>Register a new town and subscribe to it in one step — finds the nearest active PurpleAir sensor automatically, e.g. <code>/addlocation boulder-co</code>.</td></tr>
+    <tr><td><code>/addlocation &lt;slug&gt; &lt;sensor_index&gt; &lt;City, ST&gt;</code></td><td>Same, but pointing at a specific sensor by hand — the fallback for when auto-discovery can't find anything (small town, unusual name).</td></tr>
+    <tr><td><code>/removelocation &lt;slug&gt;</code></td><td>Remove a location — only the chat that added it can.</td></tr>
+    <tr><td><code>/unsubscribe &lt;slug&gt;</code></td><td>Stop alerts for a location (the location itself stays available for others).</td></tr>
+    <tr><td><code>/status</code></td><td>Show every location you're subscribed to and its current AQI.</td></tr>
+    <tr><td><code>/reportissue &lt;slug&gt;</code></td><td>Think a location's sensor looks wrong? Flag it — see <a href="#sensor-health">Sensor health checks</a> above.</td></tr>
+    <tr><td><code>/documentation</code></td><td>Links back to this page.</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  A <code>slug</code> is always lowercase and hyphenated, ending in the 2-letter state (or Canadian
+  province) code — <code>boulder-co</code>, <code>salt-lake-city-ut</code>. The bot reads the city and
+  state straight from it, so there's nothing else to fill in for the common case.
+</p>
+<p>
+  You can subscribe to as many locations as you want from one chat — there's no one-location limit.
+  Privacy-wise, the bot stores only your Telegram chat ID and which location(s) you've subscribed to —
+  no name, phone number, or other personal information — and unsubscribing stops messages immediately.
 </p>
 
 <h2 id="sources">Sources &amp; further reading</h2>

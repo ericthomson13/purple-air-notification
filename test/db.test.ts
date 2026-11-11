@@ -8,7 +8,11 @@ import {
   deleteLocation,
   getLocationBySlug,
   getPastReading,
+  getRecentReadings,
+  getRecentSensorReport,
   insertReadingHistory,
+  insertSensorReport,
+  isSubscribed,
   listLocations,
   listSubscriptionsForChat,
   listSubscriptionsForLocation,
@@ -105,16 +109,18 @@ describe("subscriptions", () => {
 });
 
 describe("deleteLocation", () => {
-  it("removes the location and cascades to its subscriptions and reading history", async () => {
+  it("removes the location and cascades to its subscriptions, reading history, and sensor reports", async () => {
     const location = await makeTestLocation("db-delete-cascade-co");
     await addSubscription(env.DB, 42, location.id);
     await insertReadingHistory(env.DB, location.id, 55, 1);
+    await insertSensorReport(env.DB, { locationId: location.id, chatId: 42, status: "pending_review", resolution: "test" });
 
     await deleteLocation(env.DB, location.id);
 
     expect(await getLocationBySlug(env.DB, "db-delete-cascade-co")).toBeNull();
     expect(await countSubscriptionsForLocation(env.DB, location.id)).toBe(0);
     expect(await getPastReading(env.DB, location.id, 0)).toBeNull();
+    expect(await getRecentSensorReport(env.DB, 42, location.id, 24)).toBeNull();
   });
 
   it("does not affect other locations' subscriptions", async () => {
@@ -163,5 +169,58 @@ describe("readings_history", () => {
 
     const remaining = await env.DB.prepare("SELECT COUNT(*) as count FROM readings_history WHERE location_id = ?").bind(location.id).first<{ count: number }>();
     expect(remaining?.count).toBe(1);
+  });
+
+  it("getRecentReadings returns the most recent N readings for a location", async () => {
+    const location = await makeTestLocation("db-recent-readings-co");
+    for (let i = 0; i < 5; i++) {
+      await insertReadingHistory(env.DB, location.id, 10 + i, 0);
+    }
+
+    const { results } = await getRecentReadings(env.DB, location.id, 3);
+    expect(results).toHaveLength(3);
+  });
+});
+
+describe("isSubscribed", () => {
+  it("is true for a chat subscribed to the location", async () => {
+    const location = await makeTestLocation("db-issubscribed-yes-co");
+    await addSubscription(env.DB, 42, location.id);
+    expect(await isSubscribed(env.DB, 42, location.id)).toBe(true);
+  });
+
+  it("is false for a chat not subscribed to the location", async () => {
+    const location = await makeTestLocation("db-issubscribed-no-co");
+    expect(await isSubscribed(env.DB, 999, location.id)).toBe(false);
+  });
+});
+
+describe("sensor_reports", () => {
+  it("insertSensorReport / getRecentSensorReport round-trips within the time window", async () => {
+    const location = await makeTestLocation("db-report-roundtrip-co");
+    await insertSensorReport(env.DB, { locationId: location.id, chatId: 42, status: "auto_resolved", resolution: "swapped to sensor 2" });
+
+    const report = await getRecentSensorReport(env.DB, 42, location.id, 24);
+    expect(report).not.toBeNull();
+  });
+
+  it("does not count a report older than the window", async () => {
+    const location = await makeTestLocation("db-report-old-co");
+    await env.DB.prepare(
+      "INSERT INTO sensor_reports (location_id, chat_id, status, resolution, created_at) VALUES (?, ?, ?, ?, datetime('now', '-25 hours'))",
+    )
+      .bind(location.id, 42, "pending_review", "old report")
+      .run();
+
+    expect(await getRecentSensorReport(env.DB, 42, location.id, 24)).toBeNull();
+  });
+
+  it("does not count a report from a different chat or a different location", async () => {
+    const location = await makeTestLocation("db-report-scoped-co");
+    const otherLocation = await makeTestLocation("db-report-other-loc-co");
+    await insertSensorReport(env.DB, { locationId: location.id, chatId: 42, status: "pending_review", resolution: "test" });
+
+    expect(await getRecentSensorReport(env.DB, 999, location.id, 24)).toBeNull();
+    expect(await getRecentSensorReport(env.DB, 42, otherLocation.id, 24)).toBeNull();
   });
 });

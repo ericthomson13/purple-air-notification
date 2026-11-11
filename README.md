@@ -50,6 +50,37 @@ Just want to subscribe rather than run this yourself? See
   locations, unique users) so you can track growth week to week. No-ops if
   `ADMIN_CHAT_ID` isn't set. The `scheduled()` handler tells the two
   triggers apart via `controller.cron` (see `src/index.ts`).
+- Sensor self-healing goes beyond just disagreeing A/B channels — two more
+  failure modes are checked on every scheduled poll, both real incidents we
+  hit with the same Leadville, CO sensor:
+  - **Flatlined**: the sensor's *reported* AQI stays essentially flat for
+    hours while nearby sensors show normal variation (`checkAndHealFlatline`
+    in `src/purpleair.ts`) — it kept updating on schedule (so it never
+    looked stale) but had effectively stopped reporting real data. Confirmed
+    against nearby healthy sensors' *current* reading first, so a genuinely
+    calm/stable weather day doesn't get mistaken for a broken sensor.
+  - **Erratic**: the inverse — the sensor's own AQI swings wildly (e.g.
+    between ~1 and 100+ on a ~24h cycle) while sensors a few meters away at
+    the same physical site stay calm the entire time (`checkAndHealErratic`).
+    Confirming this needs more than a single live snapshot of nearby
+    sensors, since an erratic sensor can happen to read "calm" at the exact
+    moment it's checked — so this pulls each nearby candidate's own recent
+    history straight from PurpleAir's `/history` endpoint and only confirms
+    if several of them stayed genuinely stable over the same window (not
+    just a real, shared regional event that made everyone's reading swing).
+
+  Either check auto-swaps to a healthy nearby sensor the same way a
+  diverging-channel sensor gets swapped. Subscribers can also proactively
+  flag a location with `/reportissue <slug>`, which runs all of these checks
+  immediately and either fixes it on the spot or logs it for the operator —
+  no code or database changes needed per report.
+  A successful auto-swap (from the scheduled poll or from `/reportissue`) is
+  deliberately silent — no `ADMIN_CHAT_ID` DM — since routine self-healing,
+  especially between nearby/co-located sensors, doesn't need a human's
+  attention. `ADMIN_CHAT_ID` only gets DM'd for the case a human actually
+  needs to act on: a confirmed-bad sensor (diverging channels, or a
+  `/reportissue` that couldn't be auto-resolved) with no healthy replacement
+  found nearby.
 
 ### Why this stack
 
@@ -325,10 +356,12 @@ per test via `vi.stubGlobal("fetch", ...)`.
 Coverage includes the full bot command surface (`/subscribe`, `/addlocation`
 in both auto-discovery and manual modes plus its error/race-condition
 branches, `/removelocation` ownership enforcement, `/unsubscribe` scoping,
-the 40/50-subscriber safety net) and, notably, `pollLocations` actually
-firing a threshold-crossing alert end to end — the one thing that's hardest
+the 40/50-subscriber safety net, `/reportissue`'s subscription/rate-limit
+gating and its auto-resolve/pending-review outcomes) and, notably,
+`pollLocations` actually firing a threshold-crossing alert end to end, plus
+its flatline and erratic self-heal paths — the kind of thing that's hardest
 to observe manually, since it only happens when a location's real AQI
-crosses a level.
+crosses a level or a sensor actually misbehaves.
 
 `npm test` also runs `npm run test:docs` — a separate, plain-node Vitest
 project (`docs/site/vitest.config.js`) for the docs site's interactive
@@ -346,7 +379,13 @@ lifecycle hook), which points git at the tracked `.githooks/` directory.
 ## Versioning & deploy notifications
 
 The project uses plain [semver](https://semver.org/) via npm's built-in
-`npm version` — no extra tooling. To cut a new version:
+`npm version` — no extra tooling. User-facing changes are recorded in
+[CHANGELOG.md](./CHANGELOG.md) (most recent first) — add an entry there
+before cutting a version. There's no automated way to notify subscribers of
+what changed yet (see the Roadmap) — for now, changelog entries are purely
+for whoever's running the bot and reading release history.
+
+To cut a new version:
 
 ```bash
 npm version patch   # or minor / major
@@ -402,9 +441,21 @@ wrangler.jsonc  Worker + cron trigger + D1 binding config
       PurpleAir sensor — no `sensor_index` lookup needed for the common
       case. Manually specifying a `sensor_index` is now just the fallback
       for when geocoding/sensor search comes up empty.
+- [x] Flatlined- and erratic-sensor detection: the scheduled poll confirms
+      against nearby sensors' current reading (flatlined) or their own
+      recent history (erratic) when a location's sensor looks stuck or wildly
+      inconsistent, and self-heals the same way it already does for
+      diverging A/B channels. `/reportissue <slug>` lets a subscriber
+      trigger the same checks on demand, no code changes needed per report.
 - [ ] Per-user configurable thresholds (not everyone wants alerts at all five levels)
 - [ ] Multi-sensor averaging per location (reduce reliance on a single sensor going offline/miscalibrated)
 - [ ] Web dashboard for browsing historical AQI per location
+- [ ] Broadcast a release's [CHANGELOG.md](./CHANGELOG.md) entry to every
+      subscriber, not just the admin digest — deliberately *not* wired to
+      fire automatically on every `npm run deploy` (not every deploy is
+      user-facing), so this needs its own explicit trigger (e.g. an operator
+      command) rather than piggybacking on the deploy hook. Needs its own
+      design pass before implementing.
 
 ## License
 
